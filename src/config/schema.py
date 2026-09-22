@@ -799,6 +799,119 @@ class SourceConfig(StrictModel):
         return out
 
 
+class FaceIdentityConfig(StrictModel):
+    """The face-based identity engine.
+
+    This is the identity pipeline for passport-photo enrollment. The body-ReID
+    encoder is never the identity mechanism here: measured on this project's
+    own evaluation set, passport-enrolled body appearance produces genuine and
+    impostor score distributions that *overlap*, so no threshold can both
+    accept a registered person and reject an unknown one. Open-set recognition
+    is not possible from it. See docs/identity.md.
+    """
+
+    enabled: bool = True
+    gallery_dir: str = "data/people"
+    """One directory per person: reference photo, embeddings, metadata."""
+
+    face_detector_model: str = "models/scrfd_10g.onnx"
+    face_detector_backend: Literal["scrfd", "yunet"] = "scrfd"
+    face_detector_confidence: Probability = 0.5
+    face_detector_nms: Probability = 0.4
+    face_detector_input: int = Field(default=640, ge=128, le=2048)
+
+    face_encoder_model: str = "models/w600k_r50.onnx"
+    chip_size: int = Field(default=112, ge=64, le=256)
+
+    calibration_file: str = "data/people/calibration.json"
+    """Fitted score-to-probability mapping. Absent means no calibrated
+    confidence is reported -- never an invented one."""
+
+    # Thresholds default to None, meaning "use the calibrated value". Setting
+    # one pins it, which is only appropriate when it came from measurement.
+    threshold_full: float | None = Field(default=None, ge=-1.0, le=1.0)
+    threshold_partial: float | None = Field(default=None, ge=-1.0, le=1.0)
+    threshold_masked: float | None = Field(default=None, ge=-1.0, le=1.0)
+    fallback_threshold: float = Field(default=0.40, ge=-1.0, le=1.0)
+    """Used only when nothing has been calibrated. Deliberately conservative."""
+    ambiguity_margin: float = Field(default=0.06, ge=0.0, le=1.0)
+    min_face_quality: float = Field(default=0.30, ge=0.0, le=1.0)
+    min_identity_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    max_live_embeddings: int = Field(default=20, ge=1, le=200)
+
+    @model_validator(mode="after")
+    def _warn_on_pinned_thresholds(self) -> FaceIdentityConfig:
+        pinned = [
+            name for name in ("threshold_full", "threshold_partial", "threshold_masked")
+            if getattr(self, name) is not None
+        ]
+        if pinned and self.calibration_file:
+            # Not an error: an operator may legitimately pin a measured value.
+            pass
+        return self
+
+
+class TemporalIdentityConfig(StrictModel):
+    """Temporal evidence accumulation and identity stability."""
+
+    enabled: bool = True
+    history_size: int = Field(default=15, ge=1, le=200)
+    min_confirmation_frames: int = Field(default=4, ge=1)
+    switch_margin: float = Field(default=0.10, ge=0.0, le=1.0)
+    lost_track_timeout: int = Field(default=30, ge=1)
+    occlusion_hold_frames: int = Field(default=45, ge=0)
+    """How long a *confirmed* identity survives without a usable face. A track
+    that never earned an identity can never acquire one this way."""
+    unknown_frames_to_release: int = Field(default=12, ge=1)
+    min_evidence_weight: float = Field(default=1.0, ge=0.0)
+
+
+class OnlineAdaptationConfig(StrictModel):
+    """Conservative gallery adaptation. Off unless deliberately enabled."""
+
+    enabled: bool = False
+    min_similarity: float | None = Field(default=None, ge=-1.0, le=1.0)
+    similarity_headroom: float = Field(default=0.15, ge=0.0, le=1.0)
+    min_quality: float = Field(default=0.70, ge=0.0, le=1.0)
+    min_confirmation_frames: int = Field(default=5, ge=1)
+    min_margin: float = Field(default=0.15, ge=0.0, le=1.0)
+    min_track_stability: float = Field(default=0.60, ge=0.0, le=1.0)
+    require_full_face: bool = True
+    max_samples_per_identity: int = Field(default=20, ge=1, le=200)
+    min_novelty: float = Field(default=0.02, ge=0.0, le=1.0)
+    max_novelty: float = Field(default=0.45, ge=0.0, le=1.0)
+    cooldown_seconds: float = Field(default=20.0, ge=0.0)
+    max_per_track: int = Field(default=3, ge=1)
+
+    @model_validator(mode="after")
+    def _check_novelty_band(self) -> OnlineAdaptationConfig:
+        if self.min_novelty >= self.max_novelty:
+            raise ValueError(
+                "online_adaptation.min_novelty must be below max_novelty; the "
+                "band accepts observations that are new but not implausible"
+            )
+        return self
+
+
+class ReferenceQualityGateConfig(StrictModel):
+    """Gates applied to a passport photograph at enrollment."""
+
+    enabled: bool = True
+    min_interocular_px: float = Field(default=28.0, ge=0.0)
+    min_face_px: int = Field(default=70, ge=8)
+    min_sharpness: float = Field(default=0.30, ge=0.0, le=1.0)
+    min_exposure: float = Field(default=0.35, ge=0.0, le=1.0)
+    max_yaw_deg: float = Field(default=25.0, ge=0.0, le=90.0)
+    max_pitch_deg: float = Field(default=20.0, ge=0.0, le=90.0)
+    min_landmark_score: float = Field(default=0.55, ge=0.0, le=1.0)
+    min_overall_quality: float = Field(default=0.45, ge=0.0, le=1.0)
+    require_full_face: bool = True
+    fail_on_warnings: bool = False
+    max_faces: int = Field(default=1, ge=1, le=20)
+    selection: Literal["largest_face", "highest_confidence", "center_most"] = "largest_face"
+
+
 class PersonConfig(StrictModel):
     """One enrolled identity. Person data lives in YAML, never in source code."""
 
@@ -884,6 +997,12 @@ class AppConfig(StrictModel):
         default_factory=RecognitionSchedulerConfig
     )
     face: FaceConfig = Field(default_factory=FaceConfig)
+    face_identity: FaceIdentityConfig = Field(default_factory=FaceIdentityConfig)
+    temporal: TemporalIdentityConfig = Field(default_factory=TemporalIdentityConfig)
+    online_adaptation: OnlineAdaptationConfig = Field(default_factory=OnlineAdaptationConfig)
+    reference_quality: ReferenceQualityGateConfig = Field(
+        default_factory=ReferenceQualityGateConfig
+    )
     backend: BackendConfig = Field(default_factory=BackendConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     benchmark: BenchmarkConfig = Field(default_factory=BenchmarkConfig)

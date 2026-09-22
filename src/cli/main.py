@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typer
 
-from src.cli import gallery_cmd, process_cmd, system_cmd, tools_cmd
+from src.cli import gallery_cmd, identity_cmd, process_cmd, system_cmd, tools_cmd
 
 app = typer.Typer(
     name="person-reid",
@@ -21,6 +21,7 @@ app.add_typer(gallery_cmd.app, name="gallery")
 process_cmd.register(app)
 tools_cmd.register(app)
 system_cmd.register(app)
+identity_cmd.register(app)
 
 
 @app.command("version")

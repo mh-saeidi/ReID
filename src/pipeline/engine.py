@@ -24,8 +24,14 @@ from src.face.detector import FaceDetector
 from src.face.factory import build_face_detector, build_face_encoder
 from src.hardware.capabilities import detect_capabilities
 from src.identity.enrollment import Enroller
+from src.identity.factory import (
+    FaceIdentitySystem,
+    build_face_identity_system,
+    face_encoder_path,
+)
 from src.identity.gallery import BuildReport, IdentityGallery
 from src.identity.matcher import IdentityMatcher
+from src.pipeline.face_identity_processor import FaceIdentityPipeline
 from src.pipeline.metrics import MetricsCollector
 from src.pipeline.processor import ReIDPipeline
 from src.reid.encoder import ReIDEncoder
@@ -53,11 +59,35 @@ class Engine:
     metrics: MetricsCollector
     face_detector: FaceDetector | None = None
     """Present only in face mode; the person detector is always YOLO26."""
+    face_identity: FaceIdentitySystem | None = None
+    """The passport-photo identity stack: SCRFD, the face gallery, calibrated
+    matching and temporal evidence. Present when it is configured *and* has
+    people enrolled -- an empty face gallery would name nobody, so the older
+    path stays in charge until ``identity build`` has been run."""
     backends: dict[str, Any] = field(default_factory=dict)
     """How each model's runtime was chosen, for logs and `system info`."""
 
-    def pipeline(self, *, use_tracking: bool = True) -> ReIDPipeline:
-        """Create a pipeline sharing this engine's models and gallery."""
+    @property
+    def uses_face_identity(self) -> bool:
+        """Whether the passport-photo identity stack is the active path."""
+        return self.face_identity is not None and not self.face_identity.gallery.is_empty
+
+    def pipeline(self, *, use_tracking: bool = True):
+        """Create a pipeline sharing this engine's models and gallery.
+
+        Which pipeline depends on what is enrolled: with a populated face
+        identity gallery the passport-photo stack runs, otherwise the original
+        path does. The choice is reported by ``describe()`` and logged at
+        startup, so it is never silent.
+        """
+        if self.uses_face_identity:
+            return FaceIdentityPipeline(
+                self.config,
+                self.detector,
+                self.face_identity,
+                metrics=self.metrics,
+                use_tracking=use_tracking,
+            )
         return ReIDPipeline(
             self.config,
             self.detector,
@@ -152,6 +182,14 @@ class Engine:
                 "identities": len(self.gallery.active_identities),
                 "directory": str(self.paths.gallery_dir),
             },
+            "identity_engine": (
+                {
+                    "path": "face_identity",
+                    **self.face_identity.describe(),
+                }
+                if self.uses_face_identity
+                else {"path": "person_gallery"}
+            ),
         }
 
     def close(self) -> None:
@@ -167,6 +205,8 @@ class Engine:
         self.encoder.close()
         if self.face_detector is not None:
             self.face_detector.close()
+        if self.face_identity is not None:
+            self.face_identity.close()
         self.events.close()
         gc.collect()
 
@@ -229,6 +269,45 @@ def build_engine(
     gallery = IdentityGallery(config, paths)
     matcher = IdentityMatcher(config.matching)
 
+    # The passport-photo identity stack. It is built whenever it is configured
+    # and people have been enrolled into it, and it then becomes the identity
+    # path; an empty face gallery leaves the original path in charge rather
+    # than producing a system that can only ever answer "unknown".
+    face_identity: FaceIdentitySystem | None = None
+    if config.face_identity.enabled and config.recognition.mode is RecognitionMode.FACE:
+        try:
+            # Share the face embedding model when both paths resolve to the
+            # same weights, rather than loading a second copy of them.
+            shared = (
+                encoder
+                if Path(encoder.info.model_path or "").resolve()
+                == face_encoder_path(config, paths).resolve()
+                else None
+            )
+            face_identity = build_face_identity_system(
+                config, paths, device, load=False, encoder=shared
+            )
+            enrolled = face_identity.gallery.load()
+            if enrolled == 0:
+                logger.debug(
+                    "The face identity gallery at %s is empty; using the "
+                    "person gallery. Run: python main.py identity build",
+                    face_identity.gallery.root,
+                )
+                face_identity.close()
+                face_identity = None
+            elif load_models:
+                face_identity.detector.load()
+                if face_identity.owns_encoder:
+                    face_identity.encoder.load()
+        except Exception as exc:  # noqa: BLE001 - a missing model must not abort startup
+            logger.warning(
+                "The face identity stack could not be built, so the person "
+                "gallery path will be used: %s",
+                exc,
+            )
+            face_identity = None
+
     event_manager = events or EventManager(
         enabled=config.events.enabled,
         log_path=(paths.events_dir / config.events.filename)
@@ -249,6 +328,7 @@ def build_engine(
         events=event_manager,
         metrics=MetricsCollector(),
         face_detector=face_detector,
+        face_identity=face_identity,
         backends={
             "detector": detector_plan.decision.to_dict()
             | {"model": detector_plan.model_path, "note": detector_plan.note},
@@ -259,6 +339,9 @@ def build_engine(
             "Engine ready",
             extra={
                 "mode": config.recognition.mode.value,
+                "identity": (
+                    "face_identity" if engine.uses_face_identity else "person_gallery"
+                ),
                 "detector": Path(detector.info.model_path).name,
                 "encoder": Path(encoder.info.model_path).name,
                 "dim": encoder.info.embedding_dimension,

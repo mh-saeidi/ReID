@@ -1,94 +1,44 @@
-# ---------------------------------------------------------------------------
-# Working configuration.
-#
-# Every section is optional: anything omitted falls back to the schema default
-# documented in configs/default.yaml. Relative paths resolve against THIS file.
-#
-#   python main.py config validate --config config.yaml
-#   python main.py gallery build   --config config.yaml
-# ---------------------------------------------------------------------------
-
 application:
-  name: "YOLO26 Person ReID"
-  version: "1.0.0"
-  log_level: "INFO"
-
+  name: YOLO26 Person ReID
+  version: 1.0.0
+  log_level: INFO
 models:
-  # YOLO26 finds the people. It never decides who they are.
-  detector: "models/yolo26n.pt"
-  # Only used when recognition.mode is "person_reid".
-  reid: "models/yolo26n-reid.onnx"
-
+  detector: models/yolo26n.pt
+  reid: models/yolo26n-reid.onnx
 device:
-  device: "auto"
+  device: auto
   fp16: true
-
 detector:
   imgsz: 640
   confidence: 0.35
-  iou: 0.50
+  iou: 0.5
   person_class_id: 0
-
-# ---------------------------------------------------------------------------
-# Recognition modality.
-#
-#   face        identity comes from the face alone -> INDEPENDENT OF CLOTHING,
-#               but needs a visible face at sufficient resolution.
-#   person_reid identity comes from whole-body appearance -> works from behind
-#               and at a distance, but a change of outfit breaks it.
-#
-# The mode is always explicit; the system never switches between them silently.
-# ---------------------------------------------------------------------------
 recognition:
-  mode: "face"
-
+  mode: face
 face:
-  backend: "auto"          # auto | opencv (YuNet+SFace) | arcface_onnx
-  detector_model: "models/face_detection_yunet_2023mar.onnx"
-  # ArcFace w600k_r50: 512-D, the stronger of the two shipped encoders.
-  # For a much smaller footprint (39 MB vs 174 MB) at slightly lower accuracy:
-  #   python scripts/fetch_face_models.py --tier lite
-  #   recognition_model: "models/face_recognition_sface_2021dec.onnx"
-  recognition_model: "models/w600k_r50.onnx"
-
+  backend: auto
+  detector_model: models/face_detection_yunet_2023mar.onnx
+  recognition_model: models/w600k_r50.onnx
   detection_confidence: 0.6
-  align: true              # 5-point alignment; most of the accuracy lives here
+  align: true
   require_landmarks: true
-
-  # A face smaller than this carries too little detail to identify safely.
-  # Raising it reduces false accepts on distant people; lowering it recognises
-  # people further away at the cost of precision.
   min_face_size: 36
   min_eye_distance: 12.0
-
-  search_region: "upper_body"   # upper_body | full_box | frame
-  # A tracked person whose face is hidden keeps their established identity for
-  # this many frames. Frames with no face are neutral evidence, never a match
-  # and never a rejection.
+  search_region: upper_body
   identity_hold_frames: 45
-
 reid:
-  # Only used in person_reid mode.
-  input_size: [256, 128]
-  similarity_metric: "cosine"
-
+  input_size:
+  - 256
+  - 128
+  similarity_metric: cosine
 matching:
-  # Deployment parameters, not universal constants. Face and whole-body
-  # embeddings live in different similarity regimes, so leaving these unset
-  # picks the right default for recognition.mode.
-  #
-  # 0.45 sits inside the clean separation measured on the demo set for BOTH
-  # shipped face encoders (ArcFace: impostors peak 0.15, genuine floor 0.91;
-  # SFace: 0.14 / 0.73). Measure yours with:
-  #   python main.py evaluate --dataset data/demo/evaluation
   recognition_threshold: 0.45
-  high_confidence_threshold: 0.60
-  unknown_label: "Unknown"
-  no_face_label: "No face"
-
+  high_confidence_threshold: 0.6
+  unknown_label: Unknown
+  no_face_label: No face
 tracking:
   enabled: true
-  tracker: "botsort.yaml"
+  tracker: botsort.yaml
   track_buffer: 30
   with_reid: true
   identity_stability:
@@ -96,51 +46,43 @@ tracking:
     history_size: 10
     minimum_recognized_frames: 3
     switch_margin: 0.08
-
 enrollment:
   require_single_person: true
-  selection_strategy: "largest_person"
+  selection_strategy: largest_person
   regenerate_missing_embeddings: true
-
 output:
-  directory: "data/output"
+  directory: data/output
   save_snapshots: true
-  snapshot_mode: "recognized"
+  snapshot_mode: recognized
   save_crops: false
   save_metadata: true
   save_video: true
-
 recording:
-  mode: "disabled"          # set to "event" for pre/post-roll clips
+  mode: disabled
   pre_event_seconds: 3.0
   post_event_seconds: 5.0
-
 performance:
-  # Face detection + recognition is the expensive stage, so a stable track is
-  # re-embedded every 3rd frame rather than every frame. Measured on the demo
-  # clip this roughly doubles throughput (9.9 -> 19.2 FPS) with no loss of
-  # recognitions, because the identity decision is already smoothed over time
-  # and new or still-unidentified tracks are always re-embedded immediately.
-  # Set to 1 to embed every frame.
   reid_interval: 3
   force_reid_on_new_track: true
   force_reid_when_unknown: true
   batch_size: 16
   max_detections: 50
-
-# ---------------------------------------------------------------------------
-# Registered people. ONE reference image is enough per person.
-# id must be unique and filename-safe; name is required; title is optional.
-# ---------------------------------------------------------------------------
+# One passport-style photograph per person. `identity build` enrols from the
+# face directly -- no person detection -- so a head-and-shoulders portrait is
+# exactly the right input.
+#
+# To enrol the evaluation identities instead of these demo subjects:
+#   python main.py identity build --from-dir data/evaluation/enrollment
 people:
-  - id: "person_a"
-    name: "Person A"
-    title: "Demo Subject"
-    image_path: "data/demo/persons/person_a.jpg"
-    enabled: true
-
-  - id: "person_b"
-    name: "Person B"
-    title: ""
-    image_path: "data/demo/persons/person_b.jpg"
-    enabled: true
+- id: person_a
+  name: Person A
+  title: Demo Subject
+  image_path: data/demo/persons/person_a.jpg
+  enabled: true
+- id: person_b
+  name: Person B
+  title: Demo Subject
+  image_path: data/demo/persons/person_b.jpg
+  enabled: true
+face_identity:
+  gallery_dir: data/people

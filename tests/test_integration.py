@@ -62,6 +62,14 @@ def engine_config(tmp_path_factory):
         for person in base["people"]
     ]
     base["gallery"] = {**base.get("gallery", {}), "directory": str(output_root / "gallery")}
+    # The face identity gallery is redirected too: a test must never read the
+    # developer's enrolled people, and an empty one keeps these cases on the
+    # person-gallery path they were written for.
+    base["face_identity"] = {
+        **base.get("face_identity", {}),
+        "gallery_dir": str(output_root / "people"),
+        "calibration_file": str(output_root / "people" / "calibration.json"),
+    }
     base["output"] = {
         **base.get("output", {}),
         "directory": str(output_root / "output"),

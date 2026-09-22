@@ -15,8 +15,14 @@ usual way a "ReID system" ends up identifying outfits:
 | --- | --- |
 | *Is there a person here?* | YOLO26 detection |
 | *Is this the same moving blob as last frame?* | BoT-SORT tracking (a temporary, source-local id) |
-| *Is this person's face visible, and where?* | YuNet face detection + 5-point alignment |
+| *Is this person's face visible, and how much of it?* | SCRFD face detection + 5-point alignment + visibility |
 | *Which registered person is this — if any?* | Face embedding compared against the identity gallery |
+
+**Enrolling from a passport photograph?** That is what the
+[face identity engine](docs/identity.md) is for: calibrated thresholds per
+visibility class, quality-weighted temporal evidence, and per-condition
+measurement across glasses, masks, pose, light, distance and occlusion. Start
+with `python main.py identity build`.
 
 Three guarantees follow from that separation:
 
@@ -38,6 +44,7 @@ Three guarantees follow from that separation:
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Person enrollment](#person-enrollment)
+- [Face identity engine (passport photos)](#face-identity-engine-passport-photos)
 - [Gallery creation](#gallery-creation)
 - [Webcam usage](#webcam-usage)
 - [Video usage](#video-usage)
@@ -341,6 +348,107 @@ distance is 15px (recommended at least 22px); the face may be turned away"
 A weak reference degrades every future comparison, so the reference gates are
 deliberately stricter than the runtime ones (`enrollment.quality.min_face_size`
 defaults to 60 px against a runtime `face.min_face_size` of 36 px).
+
+---
+
+## Face identity engine (passport photos)
+
+The default enrollment path registers a person from any photograph. The **face
+identity engine** is the path built specifically for the harder version of the
+problem: the only thing you have is one passport-style portrait, and the person
+you later see may be wearing glasses or a mask, half-turned, badly lit, further
+away, partly hidden, or photographed years later.
+
+It is the same architecture with more of it measured:
+
+```
+YOLO26 person detection → tracking → SCRFD face detection → alignment
+→ quality + visibility → ArcFace embedding → identity gallery
+→ calibrated matching → temporal evidence → identity decision
+```
+
+### Enrol, calibrate, measure
+
+```bash
+# One passport photo per person, from config.yaml's people: list ...
+python main.py identity build
+
+# ... or from a directory laid out as <person_id>/<photo>
+python main.py identity build --from-dir data/evaluation/enrollment
+
+python main.py identity list          # who is registered, and reference warnings
+
+# Fit thresholds and the score→probability mapping on labelled data
+python main.py calibrate --dataset data/evaluation
+
+# Per-condition accuracy on the held-out split
+python main.py evaluate-faces --dataset data/evaluation --output report.json
+
+# Does each component pay for itself?
+python main.py experiments --dataset data/evaluation
+```
+
+Once the face gallery has anyone in it, it becomes the identity path for
+`run`, `video`, `webcam` and `image` automatically. Startup logs
+`identity=face_identity` when it does.
+
+### Enrollment is face-first
+
+No person detection runs on a reference photograph. A passport photo is a head
+and shoulders, and requiring a person box can only reject valid references.
+
+Reference quality is checked and **reported rather than silently accepted** —
+a weak reference degrades every future comparison against that person, whereas
+a weak query degrades only that frame:
+
+```
+$ python main.py identity build --from-dir data/evaluation/enrollment
+Face gallery: 3 identity(ies), 3 embedding(s)
+  enrolled : bus_00, zidane_00, zidane_01
+
+  Reference photographs with quality warnings:
+    zidane_00: REFERENCE_POSE_TOO_EXTREME, WEAK_LANDMARKS, REFERENCE_OCCLUDED
+```
+
+Set `reference_quality.fail_on_warnings: true` to make that fatal instead.
+
+### Seven numbers, never merged into one
+
+| Field | Meaning |
+| --- | --- |
+| `detector_confidence` | YOLO26's score that this box is a person |
+| `face_detection_confidence` | SCRFD's score that this is a face |
+| `face_quality` | how much identity information the face carries |
+| `face_similarity` | cosine between embeddings — **not a probability** |
+| `track_id` | which trajectory this is — **not an identity** |
+| `identity_id` | who the system says this is |
+| `identity_confidence` | calibrated probability, or `null` when uncalibrated |
+
+`identity_confidence` is `null` until `calibrate` has been run. The system
+does not invent a probability from a cosine.
+
+### Measured results
+
+On the held-out test split (135 queries, 3 registered identities, thresholds
+fitted on a disjoint split):
+
+| Condition | n | accuracy | rank-1 | FAR |
+| --- | --- | --- | --- | --- |
+| normal / glasses / mask | 60 | 100 % | 100 % | 0 % |
+| pose / light / distance / blur | 60 | 100 % | 100 % | 0 % |
+| partial (heavy occlusion) | 15 | 73.3 % | 73.3 % | 0 % |
+| **overall** | **135** | **97.0 %** | **96.7 %** | **0 %** |
+
+Unknown rejection: 100 %. All four failures are face *detection* failures, not
+matching failures.
+
+**This is not a claim of 90 % real-world accuracy.** The repository contains
+four distinct real faces, every condition is a synthetic transformation of
+them, and there is no age-variation split because ageing cannot be simulated.
+What the numbers establish is that the pipeline is correctly wired and that
+genuine and impostor scores separate cleanly; what they cannot establish is a
+field identification rate. [docs/identity.md](docs/identity.md) §10 explains
+what a defensible evaluation would require.
 
 ---
 
@@ -1180,6 +1288,21 @@ These are real and worth reading before deploying.
   derive from the same photographs as the references, so they share lighting
   and session. No claim is made about LFW, IJB-C or your cameras. Measure it
   yourself with `main.py evaluate`.
+- **The 97 % on the evaluation set is not a field accuracy.** The evaluation
+  dataset holds four distinct real faces and every condition is a synthetic
+  transformation of them. A drawn mask is not a mask and a warped frontal
+  photograph is not a turned head. A defensible figure needs at least 30 real
+  identities captured separately under each condition; see
+  [docs/identity.md](docs/identity.md) §10.
+- **Robustness to ageing is untested.** The evaluation set has no
+  age-variation split, because ageing cannot be simulated. ArcFace is trained
+  on data that includes it, so some robustness is inherited — but inherited is
+  not demonstrated, and this system does not demonstrate it.
+- **On this dataset no component of the identity stack can be shown to pay for
+  itself.** The A/B ladder from `B_face_only` to `F_full_system` scores
+  identically at 97.0 %. Calibration, quality weighting and per-visibility
+  thresholds are justified by the failure modes they prevent, not by a
+  measured gain here.
 - **The shipped threshold is a starting point.** `0.45` was measured on a
   small, augmentation-derived demo set and sits inside the clean gap for both
   shipped encoders. Re-measure per deployment.

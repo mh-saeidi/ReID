@@ -171,6 +171,22 @@ class RecognitionResult:
     detail: str = ""
     """Human-readable reason, used for NO_FACE and REJECTED outcomes."""
 
+    # The quantities below are kept separate from `similarity` on purpose. A
+    # cosine similarity is not a probability and must never be presented as
+    # one; `identity_confidence` is a calibrated probability and is None
+    # whenever no calibration has been fitted, rather than being invented from
+    # the similarity.
+    identity_confidence: float | None = None
+    """Calibrated P(same person | score), or None when uncalibrated."""
+    face_quality: float | None = None
+    """Quality of the face this decision came from, in [0, 1]."""
+    face_detection_confidence: float | None = None
+    """The face detector's score. Not an identity confidence."""
+    visibility: str = ""
+    """How much of the face was usable: full_face, masked, partial_face, ..."""
+    failure_reason: str = ""
+    """Which layer refused, when this is not a recognition."""
+
     @property
     def is_recognized(self) -> bool:
         return self.status in RECOGNIZED_STATUSES
@@ -255,6 +271,21 @@ class DetectionResult:
             "face": self.face.to_dict() if self.face is not None else None,
             "instantaneous_status": self.recognition.status.value,
             "instantaneous_similarity": round(self.recognition.similarity, 4),
+            # Distinct quantities, reported distinctly.
+            "identity_confidence": (
+                None if self.effective.identity_confidence is None
+                else round(self.effective.identity_confidence, 4)
+            ),
+            "face_quality": (
+                None if self.effective.face_quality is None
+                else round(self.effective.face_quality, 4)
+            ),
+            "face_detection_confidence": (
+                None if self.effective.face_detection_confidence is None
+                else round(self.effective.face_detection_confidence, 4)
+            ),
+            "face_visibility": self.effective.visibility or None,
+            "failure_reason": self.effective.failure_reason or None,
             "frame_index": self.frame_index,
             "timestamp": self.timestamp,
             "source_id": self.source_id,

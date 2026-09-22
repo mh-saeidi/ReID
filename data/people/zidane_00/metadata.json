@@ -1,0 +1,62 @@
+{
+  "created_at": "2026-09-22T10:53:59+00:00",
+  "embeddings": {
+    "reference": {
+      "created_at": "2026-09-22T10:53:59+00:00",
+      "dimension": 512,
+      "frame_index": -1,
+      "key": "reference",
+      "notes": "",
+      "quality": 0.6093,
+      "similarity_at_capture": 0.0,
+      "source": "reference",
+      "track_id": -1
+    }
+  },
+  "enabled": true,
+  "encoder_fingerprint": "onnxruntime.arcface:w600k_r50:112x112:512",
+  "id": "zidane_00",
+  "name": "Zidane 00",
+  "quality": {
+    "messages": [
+      "reference is non-frontal (yaw 71 deg, pitch 3 deg); a passport-style frontal photograph matches a wider range of queries",
+      "weak landmark fit (score 0.36); alignment may be imprecise",
+      "reference face is partial_face; an unobstructed reference is strongly preferred"
+    ],
+    "score": {
+      "components": {
+        "exposure": 0.6513,
+        "landmarks": 0.3607,
+        "pose": 0.41,
+        "resolution": 0.5426,
+        "sharpness": 1.0,
+        "visibility": 0.55
+      },
+      "measurements": {
+        "interocular_px": 35.3,
+        "laplacian_variance": 468.3,
+        "mean_intensity": 83.5,
+        "pitch_deg": 3.2,
+        "roll_deg": 6.4,
+        "yaw_deg": 70.8
+      },
+      "notes": [
+        "non-frontal (yaw 71 deg, pitch 3 deg)",
+        "weak or geometrically inconsistent landmarks",
+        "visibility: partial_face"
+      ],
+      "overall": 0.6093,
+      "visibility": "partial_face",
+      "weakest_component": "landmarks"
+    },
+    "warnings": [
+      "REFERENCE_POSE_TOO_EXTREME",
+      "WEAK_LANDMARKS",
+      "REFERENCE_OCCLUDED"
+    ]
+  },
+  "reference_image": "/Users/mohammadhossein/Desktop/ReID-project/data/people/zidane_00/reference/passport.jpg",
+  "schema_version": 2,
+  "title": "",
+  "updated_at": "2026-09-22T10:53:59+00:00"
+}

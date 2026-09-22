@@ -1,0 +1,26 @@
+{
+  "generated_by": "scripts/build_evaluation_dataset.py",
+  "synthetic": true,
+  "warning": "All query conditions are SYNTHETIC image transformations of a small number of real faces. They are suitable for pipeline validation and for A/B comparison between configurations, and are NOT suitable for claiming a real-world identification rate. No age-variation split is generated, because ageing cannot be simulated.",
+  "registered_identities": [
+    "zidane_00",
+    "zidane_01",
+    "bus_00"
+  ],
+  "unknown_identities": [
+    "bus_01"
+  ],
+  "conditions": [
+    "normal",
+    "glasses",
+    "mask",
+    "partial",
+    "different_pose",
+    "low_light",
+    "different_distance",
+    "blur"
+  ],
+  "samples_per_condition": 8,
+  "images_written": 216,
+  "seed": 17
+}

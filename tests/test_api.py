@@ -44,6 +44,12 @@ def client(tmp_path_factory):
         {**p, "image_path": str(PROJECT_ROOT / p["image_path"])} for p in base["people"]
     ]
     base["gallery"] = {**base.get("gallery", {}), "directory": str(output_root / "gallery")}
+    # Redirected so the tests never read the developer's enrolled face gallery.
+    base["face_identity"] = {
+        **base.get("face_identity", {}),
+        "gallery_dir": str(output_root / "people"),
+        "calibration_file": str(output_root / "people" / "calibration.json"),
+    }
     base["output"] = {
         **base.get("output", {}),
         "directory": str(output_root / "output"),
