@@ -54,8 +54,21 @@ def align_face(
     image: np.ndarray,
     landmarks: np.ndarray,
     size: int = DEFAULT_CHIP_SIZE,
+    _bbox=None,
 ) -> np.ndarray:
-    """Warp a face onto the canonical template, returning a ``size x size`` chip."""
+    """Warp a face onto the canonical template, returning a ``size x size`` chip.
+
+    ``bbox`` is accepted and ignored. Measured on real footage: when a head
+    turns, both eyes project onto nearly the same point and the five-point fit
+    becomes visibly wrong -- the chip is a rotated close-up of an ear. The
+    obvious repair, detecting that case and substituting a box-framed crop,
+    was implemented and measured, and it is *worse*: rank-1 fell from 100% to
+    94.8% and the fifth-percentile genuine score from 0.244 to 0.040 on the
+    same 251 labelled faces. The encoder is trained on warped chips, so even a
+    badly warped one is closer to its input distribution than a plain resized
+    crop. The parameter is kept so callers need not know that, and so the
+    finding is recorded where the next person will look.
+    """
     matrix = estimate_transform(landmarks, size)
     return cv2.warpAffine(
         image, matrix, (size, size), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0)

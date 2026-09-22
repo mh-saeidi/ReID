@@ -267,56 +267,107 @@ one embedding whose provenance is certain is the one that stays.
 
 ## 10. What the numbers mean
 
-Measured on the held-out test split (135 queries, 120 known / 15 unknown,
-3 registered identities), with the thresholds fitted on a **disjoint**
-calibration split:
+There are two evaluation sets, and they answer different questions.
 
-| Condition | n | accuracy | rank-1 | TAR | FAR |
-|---|---|---|---|---|---|
-| normal | 20 | 100 % | 100 % | 100 % | 0 % |
-| glasses | 20 | 100 % | 100 % | 100 % | 0 % |
-| mask | 20 | 100 % | 100 % | 100 % | 0 % |
-| different pose | 15 | 100 % | 100 % | 100 % | 0 % |
-| low light | 15 | 100 % | 100 % | 100 % | 0 % |
-| different distance | 15 | 100 % | 100 % | 100 % | 0 % |
-| blur | 15 | 100 % | 100 % | 100 % | 0 % |
-| partial | 15 | 73.3 % | 73.3 % | 73.3 % | 0 % |
-| **overall** | **135** | **97.0 %** | **96.7 %** | **96.7 %** | **0 %** |
+### 10a. Real footage — what the system actually does
 
-Unknown rejection 100 % (15/15). Precision / recall / F1: 1.000 / 0.967 / 0.983.
-All four failures are face **detection** failures on the heavily-occluded
-split, not matching failures.
+Two people enrolled from **genuine passport photographs**, then identified in
+footage of them walking, talking, sitting and working. One of them wears
+glasses throughout the video and wears none in his passport photo, so the
+glasses condition here is real rather than drawn on.
 
-### Why this is not a 90 %-accuracy claim
+The dataset is built by `scripts/build_video_dataset.py` from 261 face
+detections that a **human labelled by eye** — never the system being measured,
+which would make the evaluation circular. Thresholds are fitted on
+temporally disjoint blocks of the video, with a guard band so that no test
+image is within 0.3 s of a calibration image.
 
-Read this before quoting the table above.
+Held-out test split, 99 queries, thresholds calibrated on the other blocks:
 
-- The repository contains **four distinct real faces**. Three are registered
-  and one stands in for the unknown population. Three identities is not an
-  open-set problem; it is a three-way choice with a reject option.
-- **Every condition is a synthetic transformation** of those same faces —
-  drawn glasses, a drawn mask, a perspective warp, gamma and noise,
-  downsampling, blur. A synthetic mask is not a real mask, and a warped
-  frontal photograph is not a photograph of a turned head.
-- **There is no age-variation split**, because ageing cannot be simulated.
-  The spec asks for robustness to older photographs; that property is
-  **untested**, and the architecture's support for it (ArcFace's training
-  distribution) is inherited, not demonstrated here.
-- The A/B ladder shows every variant from `B_face_only` to `F_full_system`
-  scoring **identically** at 97.0 %. On data this easy, the calibration,
-  quality weighting and conditional thresholds cannot be shown to pay for
-  themselves. They are justified by the failure modes they prevent, not by a
-  measured gain on this set.
+| Condition | n | accuracy | rank-1 | FAR |
+|---|---|---|---|---|
+| frontal | 45 | 100 % | 100 % | 0 % |
+| distant (face < 85 px) | 12 | 100 % | 100 % | 0 % |
+| turned (head rotated away) | 39 | 87.2 % | 94.9 % | 0 % |
+| false detections (must be rejected) | 3 | 100 % | — | 0 % |
+| **overall** | **99** | **94.9 %** | **97.9 %** | **0 %** |
 
-What the numbers *do* establish: the pipeline is correctly wired, the
-separation between genuine and impostor scores is real and large, the open-set
-rejection works, and thresholds fitted on one split transfer to a disjoint
-one. What they do not establish is a real-world identification rate.
+Unknown rejection 100 %. Precision / recall / F1: 1.000 / 0.948 / 0.973.
+**Zero identity errors**: the system never named one registered person as the
+other. Every failure is a refusal on a near-profile face, and those score
+0.04–0.11 against an impostor maximum of 0.14 — accepting them would mean
+accepting false matches, so declining is correct.
 
-To get a defensible figure, build the dataset described in
-`scripts/build_evaluation_dataset.py`'s docstring from **real** captures: at
-least 30 identities, each with a genuine passport photo plus separate captures
-under each condition, including photographs taken years apart.
+### 10b. The same footage through the live pipeline
+
+The table above scores cropped queries. Running the whole video through
+`main.py video` and matching the output against the same labels, across 627
+frames:
+
+| Matching rule | correct | named wrong | unnamed |
+|---|---|---|---|
+| face box overlaps the labelled face (strict) | **90.4 %** | 1 | 9 |
+| the labelled face lies in the detection's person box | **94.8 %** | 1 | 11 |
+
+The two rules differ because between scheduled recognition passes a track
+redraws its face box where the face was last seen, so the box is stale even
+though the identity is current. The person box is recomputed every frame,
+which makes the second rule the fairer test of "was this person named, and
+named correctly". Both clear 90 %.
+
+### What this establishes, and what it does not
+
+**Established.** One passport photograph per person is enough to identify them
+in real footage across pose, lighting, distance, partial occlusion and
+glasses-not-in-the-reference. Genuine and impostor scores separate cleanly on
+real data. Thresholds fitted on one part of the footage transfer to another.
+The system refuses rather than guesses when the face carries no signal, and it
+never confused the two registered people.
+
+**Not established.**
+
+- **Scale.** Two registered identities (four with the demo subjects). Impostor
+  scores rise with gallery size, which pushes the threshold up, which costs
+  recall. Nothing here predicts behaviour at fifty identities.
+- **Unknown *people*.** The unknown split holds false face detections — hands,
+  a dark doorway — not unregistered humans, because no third person's face is
+  resolvable in this footage. Rejecting a hand is much easier than rejecting a
+  stranger.
+- **Ageing.** The passport photographs and the video are close in time. A
+  reference from years earlier is **untested**.
+- **Demographics.** Two men of similar background. Nothing here says anything
+  about performance across skin tones, ages or sexes.
+
+A deployment-grade figure needs at least 30 identities, genuine unregistered
+people, and references separated from the queries by years.
+
+### 10c. Synthetic footage — pipeline validation only
+
+`data/evaluation` is built by `scripts/build_evaluation_dataset.py` from four
+faces with drawn-on glasses and masks, warps, gamma and blur. It scores
+**97.0 %** overall, and that number should not be quoted as accuracy: every
+condition is a transformation of the same few photographs. It is useful for
+exactly two things — checking the pipeline is wired correctly, and A/B
+comparison between configurations.
+
+On it, the A/B ladder from `B_face_only` to `F_full_system` scores
+**identically**. On data that easy, calibration, quality weighting and
+conditional thresholds cannot be shown to pay for themselves; they are
+justified by the failure modes they prevent.
+
+---
+
+## 10d. What was measured and rejected
+
+Changes that looked obviously right, were implemented, measured, and then
+removed because the data disagreed. They are recorded here so nobody spends
+the afternoon again.
+
+| Change | Expected | Measured | Verdict |
+|---|---|---|---|
+| Box-framed crop instead of the warp when the five-point fit degenerates on a profile | recover turned faces | rank-1 **fell** 100 % → 94.8 %, genuine p5 0.244 → 0.040 | **rejected** — the encoder is trained on warped chips, so even a bad warp beats a plain crop |
+| Mirror the reference embedding | cover the other profile | genuine p5 0.244 → 0.247, but impostor max 0.184 → **0.193**; end-to-end identical at 96.0 % | **rejected** — doubles the gallery and narrows the impostor margin for no gain at the operating point |
+| Flip the query and take the best score | same | helps only at thresholds above the calibrated one; identical at 0.175 | **rejected** at this gallery size |
 
 ---
 
@@ -344,6 +395,31 @@ active.
 
 ---
 
+### Building an evaluation set from your own footage
+
+```bash
+# 1. Extract every face the detector finds, and label them by eye.
+#    The labels file is a list of {frame, bbox, label}; label is a person id,
+#    "not_a_face" for a false detection, or "ambiguous" to exclude.
+#
+# 2. Turn video + labels into an evaluation dataset.
+python scripts/build_video_dataset.py \
+    --video data/demo/test_video/test.mp4 \
+    --labels data/demo/test_video/test_labels.json \
+    --enrollment data/input \
+    --output data/evaluation_video
+
+# 3. Fit thresholds on part of it, measure on the rest.
+python main.py calibrate --dataset data/evaluation_video
+python main.py evaluate-faces --dataset data/evaluation_video
+```
+
+Query images are named `<block>__<frame>.jpg`, and the splitter keeps a block
+whole. Two frames a tenth of a second apart are the same photograph for this
+purpose; splitting them across calibration and test would measure
+memorisation rather than accuracy.
+
+
 ## 12. Configuration
 
 See `face_identity`, `temporal`, `online_adaptation` and `reference_quality`
@@ -356,5 +432,9 @@ in `config.yaml`. The settings most worth knowing:
 | `face_identity.min_face_quality` | 0.30 | below this, `NO_FACE` rather than a guess |
 | `temporal.min_confirmation_frames` | 4 | how much evidence before naming |
 | `temporal.occlusion_hold_frames` | 45 | how long a confirmed identity survives a hidden face |
+| `face_identity.recognize_orphan_faces` | `true` | identify a visible face whose body the person detector missed |
+| `face_identity.orphan_scan_interval` | 3 | how often to look for those; 1 is more accurate and slower |
+| `recognition_scheduler.low_confidence_interval` | 3 | passes while a track is confirming; 1 removes the ramp delay |
+| `temporal.strong_evidence_weight` | 1.6 | accumulated weight that confirms in 2 frames instead of 4 |
 | `online_adaptation.enabled` | `false` | gallery growth, off until deliberately enabled |
 | `reference_quality.fail_on_warnings` | `false` | whether a weak passport photo is fatal |

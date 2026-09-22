@@ -41,6 +41,18 @@ from src.utils.logging import get_logger
 logger = get_logger(__name__)
 
 REFERENCE_KEY = "reference"
+MIRRORED_KEY = "reference_mirrored"
+"""The passport photograph, left-right mirrored.
+
+Not produced by enrollment, and this is a measured decision rather than an
+oversight. Mirroring the reference does raise genuine scores for a head
+turned the other way -- but it raises impostor scores too (0.184 to 0.193 on
+the real evaluation footage), and at the *calibrated* operating point the
+end-to-end accuracy was identical with and without it: 96.0% either way.
+Doubling the gallery and narrowing the impostor margin for no measured gain
+is the wrong trade at two identities. The key is reserved, and treated as a
+reference wherever it appears, so that a deployment with enough identities to
+need the extra coverage can enable it without a migration."""
 SCHEMA_VERSION = 2
 
 
@@ -65,7 +77,12 @@ class FaceEmbeddingRecord:
 
     @property
     def is_reference(self) -> bool:
-        return self.key == REFERENCE_KEY
+        """True for any embedding derived from the enrollment photograph.
+
+        References are protected from eviction, so this must cover the
+        mirrored one too.
+        """
+        return self.key in (REFERENCE_KEY, MIRRORED_KEY)
 
     def to_dict(self) -> dict[str, Any]:
         return {

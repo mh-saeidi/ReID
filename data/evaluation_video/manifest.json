@@ -1,0 +1,30 @@
+{
+  "source_video": "data/demo/test_video/test.mp4",
+  "frames": 627,
+  "block_frames": 60,
+  "guard_frames": 9,
+  "identities": [
+    "Saeidi",
+    "Sharahi"
+  ],
+  "written": {
+    "Sharahi": 91,
+    "Saeidi": 82,
+    "not_a_face": 7
+  },
+  "skipped": {
+    "block_guard": 79,
+    "ambiguous": 2
+  },
+  "conditions": {
+    "frontal": "both eyes separated: interocular >= 22% of the face box",
+    "turned": "head rotated away from the camera",
+    "distant": "face spans fewer than 85 px"
+  },
+  "synthetic": false,
+  "notes": [
+    "Real footage of the registered people, labelled by eye.",
+    "Query images are regions of video frames, so images from one block are near-duplicates; the splitter keeps a block whole.",
+    "The unknown split holds false face detections, not unregistered people: this footage contains no third person whose face the detector resolves, so the impostor evidence here is weaker than a deployment needs."
+  ]
+}

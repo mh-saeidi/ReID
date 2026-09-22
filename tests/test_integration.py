@@ -88,7 +88,13 @@ def engine(engine_config):
     built = build_engine(engine_config)
     report = built.build_gallery()
     assert report.ok, report.failed
-    assert len(built.gallery.active_identities) == 2
+    # Derived from the configuration, not hard-coded: `people:` is user data,
+    # and registering someone must not fail the acceptance suite. The demo
+    # subjects these cases need are asserted where they are used.
+    expected = sum(1 for person in engine_config.people if person.enabled)
+    assert len(built.gallery.active_identities) == expected
+    registered = {i.id for i in built.gallery.active_identities}
+    assert {"person_a", "person_b"} <= registered
     yield built
     built.close()
     # Native model handles (OpenCV DNN, ONNX Runtime, torch) must be released
@@ -106,7 +112,7 @@ def names_in(result) -> list[str | None]:
 class TestEnrollment:
     def test_one_reference_image_per_person_is_enough(self, engine) -> None:
         identities = {i.id: i for i in engine.gallery.active_identities}
-        assert set(identities) == {"person_a", "person_b"}
+        assert {"person_a", "person_b"} <= set(identities)
         for identity in identities.values():
             assert identity.embedding is not None
             assert identity.embedding_dimension == engine.encoder.info.embedding_dimension
@@ -214,12 +220,20 @@ class TestImageAcceptanceCases:
 
     def test_directory_processing_covers_every_image(self, engine, tmp_path) -> None:
         pipeline = engine.pipeline(use_tracking=False)
-        summary = ImageRunner(engine, pipeline, save=False).run(
-            ImageDirectorySource(DEMO_DIR / "test_images")
+        directory = DEMO_DIR / "test_images"
+        # Counted from the directory rather than hard-coded: "covers every
+        # image" is the claim, and it must hold when images are added.
+        available = sum(
+            1 for p in directory.iterdir()
+            if p.suffix.lower() in {".jpg", ".jpeg", ".png"}
         )
-        assert summary.images == 6
+        summary = ImageRunner(engine, pipeline, save=False).run(
+            ImageDirectorySource(directory)
+        )
+        assert summary.images == available
+        assert len(summary.outcomes) == available
         assert summary.failures == {}
-        assert set(summary.identities) == {"person_a", "person_b"}
+        assert {"person_a", "person_b"} <= set(summary.identities)
 
 
 class TestVideoAcceptanceCase:

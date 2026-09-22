@@ -47,6 +47,15 @@ class QuerySample:
     condition: str
     true_identity: str | None
     """``None`` means this person is deliberately not registered."""
+    group: str = ""
+    """Samples that are not independent of each other.
+
+    Frames cut from one moment of one video are near-duplicates: putting some
+    in the calibration split and the rest in the test split measures how well
+    a threshold fits images it has effectively already seen. Giving them a
+    shared group keeps them on the same side of the split. Empty means the
+    sample stands alone.
+    """
 
     @property
     def is_known(self) -> bool:
@@ -322,6 +331,21 @@ class EvaluationReport:
 # --------------------------------------------------------------------------- #
 
 
+
+_GROUP_SEPARATOR = "__"
+
+
+def group_of(path: Path) -> str:
+    """Read the independence group from a filename.
+
+    ``block03__f0180.jpg`` belongs to group ``block03``. Frames cut from one
+    stretch of one video share a group so the split cannot put near-duplicates
+    on both sides of it. A name without the separator stands alone.
+    """
+    stem = path.stem
+    return stem.split(_GROUP_SEPARATOR, 1)[0] if _GROUP_SEPARATOR in stem else ""
+
+
 def load_dataset(root: Path) -> tuple[dict[str, Path], list[QuerySample], dict[str, Any]]:
     """Read enrollment references, query samples and the manifest."""
     root = Path(root)
@@ -340,7 +364,8 @@ def load_dataset(root: Path) -> tuple[dict[str, Path], list[QuerySample], dict[s
             for person_dir in sorted(p for p in condition_dir.iterdir() if p.is_dir()):
                 for image in iter_images(person_dir, DEFAULT_IMAGE_EXTENSIONS):
                     samples.append(
-                        QuerySample(image, condition_dir.name, person_dir.name)
+                        QuerySample(image, condition_dir.name, person_dir.name,
+                                    group=group_of(image))
                     )
 
     unknown_root = root / "unknown"
@@ -348,9 +373,13 @@ def load_dataset(root: Path) -> tuple[dict[str, Path], list[QuerySample], dict[s
         for entry in sorted(unknown_root.iterdir()):
             if entry.is_dir():
                 for image in iter_images(entry, DEFAULT_IMAGE_EXTENSIONS):
-                    samples.append(QuerySample(image, entry.name, None))
+                    samples.append(
+                        QuerySample(image, entry.name, None, group=group_of(image))
+                    )
             elif entry.suffix.lower() in DEFAULT_IMAGE_EXTENSIONS:
-                samples.append(QuerySample(entry, "normal", None))
+                samples.append(
+                    QuerySample(entry, "normal", None, group=group_of(entry))
+                )
 
     manifest: dict[str, Any] = {}
     manifest_path = root / "manifest.json"
@@ -373,12 +402,29 @@ def split_samples(
     contact with new data.
     """
     rng = np.random.default_rng(seed)
-    buckets: dict[tuple[str, str | None], list[QuerySample]] = {}
-    for sample in samples:
-        buckets.setdefault((sample.condition, sample.true_identity), []).append(sample)
 
+    # Samples carrying a group are split by group, never within it, so
+    # near-duplicates cannot straddle the two halves. Ungrouped samples are
+    # split individually, as before.
+    grouped = [s for s in samples if s.group]
+    if grouped:
+        names = sorted({s.group for s in grouped})
+        order = rng.permutation(len(names))
+        cut = max(1, int(round(len(names) * calibration_fraction))) if len(names) > 1 else 0
+        calibration_groups = {names[i] for i in order[:cut]}
+    else:
+        calibration_groups = set()
+
+    buckets: dict[tuple[str, str | None], list[QuerySample]] = {}
     calibration: list[QuerySample] = []
     test: list[QuerySample] = []
+    for sample in samples:
+        if sample.group:
+            target = calibration if sample.group in calibration_groups else test
+            target.append(sample)
+        else:
+            buckets.setdefault((sample.condition, sample.true_identity), []).append(sample)
+
     for group in buckets.values():
         indices = rng.permutation(len(group))
         cut = int(round(len(group) * calibration_fraction))
@@ -421,7 +467,7 @@ class FacePipeline:
             return None, None, None, face
         visibility = classify_visibility(image, face.bbox, face.landmarks)
         try:
-            chip = align_face(image, face.landmarks, self.chip_size)
+            chip = align_face(image, face.landmarks, self.chip_size, face.bbox)
         except Exception:  # noqa: BLE001 - cv2 raises broadly
             return None, None, visibility, face
         quality = assess_face_quality(chip, face, visibility)

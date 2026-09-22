@@ -225,6 +225,8 @@ def build_face_identity_system(
             occlusion_hold_frames=config.temporal.occlusion_hold_frames,
             unknown_frames_to_release=config.temporal.unknown_frames_to_release,
             min_evidence_weight=config.temporal.min_evidence_weight,
+            fast_confirmation_frames=config.temporal.fast_confirmation_frames,
+            strong_evidence_weight=config.temporal.strong_evidence_weight,
         ),
         fallback_threshold=settings.fallback_threshold,
     )

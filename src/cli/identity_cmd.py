@@ -157,12 +157,16 @@ def build_gallery(
                     "score": result.report.quality.to_dict() if result.report.quality else None,
                 },
             )
+            quality_score = (
+                result.report.quality.overall if result.report.quality else 0.0
+            )
             identity.embeddings["reference"] = FaceEmbeddingRecord(
                 key="reference",
                 vector=result.embedding,
                 source="reference",
-                quality=result.report.quality.overall if result.report.quality else 0.0,
+                quality=quality_score,
             )
+
             # The operator's original is never modified; this is a copy.
             copied = system.gallery.copy_reference_image(entry.id, reference)
             identity.reference_image = str(copied)

@@ -840,6 +840,34 @@ class FaceIdentityConfig(StrictModel):
 
     max_live_embeddings: int = Field(default=20, ge=1, le=200)
 
+    recognize_orphan_faces: bool = True
+    """Identify a face that lies inside no detected person box.
+
+    The architecture runs person detection first, and normally every face
+    belongs to a person the detector found. But a person who is seated behind
+    a desk, or visible only through a doorway, is often not detected as a
+    person at all while their face is perfectly clear -- measured on real
+    footage, YOLO26 returned a box around such a person's legs, four hundred
+    pixels below their head. Dropping those faces discards identity evidence
+    for no reason: a visible face is a person.
+
+    Such a detection reports a *derived* person region and a detector
+    confidence of zero, so nothing downstream mistakes it for a person the
+    detector actually found. It never changes how identity is decided.
+    """
+
+    orphan_scan_interval: int = Field(default=3, ge=1)
+    """How often to look for orphan faces when no tracked person is due.
+
+    Face detection is the expensive stage, and normally it runs only when the
+    scheduler wants a recognition pass. Scanning for orphans on every frame
+    regardless roughly halves throughput. The people this recovers are the
+    ones the person detector missed *because* they are sitting still, so a
+    few frames between scans costs little: measured on real footage, 1 gives
+    90.4% and 11.4 FPS, 3 gives 89.6% and 16.3 FPS. Between scans an orphan
+    keeps the conclusion of the last one rather than flickering out.
+    """
+
     @model_validator(mode="after")
     def _warn_on_pinned_thresholds(self) -> FaceIdentityConfig:
         pinned = [
@@ -857,7 +885,8 @@ class TemporalIdentityConfig(StrictModel):
 
     enabled: bool = True
     history_size: int = Field(default=15, ge=1, le=200)
-    min_confirmation_frames: int = Field(default=4, ge=1)
+    min_confirmation_frames: int = Field(default=4, ge=2)
+    """Never 1: a single frame must never name anybody."""
     switch_margin: float = Field(default=0.10, ge=0.0, le=1.0)
     lost_track_timeout: int = Field(default=30, ge=1)
     occlusion_hold_frames: int = Field(default=45, ge=0)
@@ -865,6 +894,12 @@ class TemporalIdentityConfig(StrictModel):
     that never earned an identity can never acquire one this way."""
     unknown_frames_to_release: int = Field(default=12, ge=1)
     min_evidence_weight: float = Field(default=1.0, ge=0.0)
+    fast_confirmation_frames: int = Field(default=2, ge=2)
+    """Floor on observations before naming, when the evidence is strong.
+    Never below 2: one frame must never name anybody."""
+    strong_evidence_weight: float = Field(default=1.6, ge=0.0)
+    """Accumulated quality-weighted evidence that confirms at
+    ``fast_confirmation_frames`` instead of ``min_confirmation_frames``."""
 
 
 class OnlineAdaptationConfig(StrictModel):
@@ -943,6 +978,17 @@ class PersonConfig(StrictModel):
         if not value:
             raise ValueError("people[].name is required and must not be blank")
         return value
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _blank_title(cls, value: Any) -> str:
+        """Accept ``title:`` written with nothing after it.
+
+        YAML reads a bare key as None, which is the most natural way to write
+        "this person has no title". Rejecting it stops the whole configuration
+        from loading over an optional field.
+        """
+        return "" if value is None else value
 
     @model_validator(mode="after")
     def _at_least_one_image(self) -> PersonConfig:

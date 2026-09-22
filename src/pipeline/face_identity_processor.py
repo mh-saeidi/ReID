@@ -81,6 +81,67 @@ _STATUS_MAP = {
 }
 
 
+
+
+def _bbox_iou(a: BBox, b: BBox) -> float:
+    x1, y1 = max(a.x1, b.x1), max(a.y1, b.y1)
+    x2, y2 = min(a.x2, b.x2), min(a.y2, b.y2)
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    union = a.area + b.area - inter
+    return inter / union if union > 0 else 0.0
+
+
+def head_and_shoulders(face: BBox, width: int, height: int) -> BBox:
+    """A plausible person region around a face whose body was not detected.
+
+    Reported instead of the face box alone so the output stays uniform: every
+    detection has a person region. It is derived, not detected, which is why
+    the detection that carries it has a detector confidence of zero.
+    """
+    pad_x = face.width * 0.75
+    return BBox(
+        max(0.0, face.x1 - pad_x),
+        max(0.0, face.y1 - face.height * 0.35),
+        min(float(width), face.x2 + pad_x),
+        min(float(height), face.y2 + face.height * 1.6),
+    )
+
+
+def _scheduler_status(
+    decision: IdentityDecision, presented: RecognitionStatus
+) -> RecognitionStatus:
+    """What the *scheduler* should believe about this pass.
+
+    The scheduler backs off geometrically on repeated unknowns, which is right
+    for a stranger -- somebody who has failed to match ten times will probably
+    fail the eleventh -- and catastrophic for a track that is matching well
+    but has not yet gathered enough evidence to be named. Both are presented
+    as "unknown", so without this the second case starves itself: fewer
+    recognition passes, so less evidence, so it stays unconfirmed, so fewer
+    passes still. Measured on real footage, that loop left faces matching at
+    0.595 against a 0.172 threshold reported as unknown for dozens of frames.
+
+    The two are distinguishable: an unconfirmed track with a leading candidate
+    is accumulating evidence, and one with no candidate at all has matched
+    nobody. Only the second should back off.
+    """
+    if decision.status is not IdentityStatus.UNCERTAIN:
+        return presented
+    evidence = decision.evidence
+    if evidence is not None and evidence.ranked_candidates():
+        return RecognitionStatus.LOW_CONFIDENCE
+    return RecognitionStatus.UNKNOWN
+
+
+@dataclass(slots=True)
+class _FaceOnlyTrack:
+    """A face the person detector did not account for, tracked by overlap."""
+
+    face_bbox: BBox
+    person_bbox: BBox
+    last_scanned_frame: int
+
+
 @dataclass(slots=True)
 class FaceObservation:
     """Everything the face layers produced for one person box."""
@@ -158,6 +219,13 @@ class FaceIdentityPipeline:
         # bookkeeping, not inside it: a track is a trajectory, an identity is a
         # claim about a person, and the two have different lifetimes.
         self._identity_states: dict[int, TrackIdentityState] = {}
+        # Faces whose body the person detector did not find. They are tracked
+        # by overlap between consecutive frames, which is enough to accumulate
+        # evidence on a seated or partly hidden person.
+        self._face_only_tracks: dict[int, _FaceOnlyTrack] = {}
+        self._recognize_orphan_faces = config.face_identity.recognize_orphan_faces
+        self._orphan_scan_interval = config.face_identity.orphan_scan_interval
+        self._last_orphan_scan = -10_000
 
     # ------------------------------------------------------------- properties
     @property
@@ -187,6 +255,8 @@ class FaceIdentityPipeline:
         self._tracks.reset()
         self._scheduler.reset()
         self._identity_states.clear()
+        self._face_only_tracks.clear()
+        self._last_orphan_scan = -10_000
         if self._use_tracking:
             self._detector.reset_tracker()
 
@@ -200,11 +270,13 @@ class FaceIdentityPipeline:
                 if self._use_tracking
                 else self._detector.detect(frame.image)
             )
-        detections = detections[: self._config.performance.max_detections]
+        detections = list(detections[: self._config.performance.max_detections])
 
         states, new_tracks = self._bind_tracks(detections, frame)
         with Stopwatch(self._metrics, "reid") as reid_timer:
-            observations = self._observe_faces(frame, detections, states)
+            observations = self._observe_faces(
+                frame, detections, states, new_tracks
+            )
 
         with Stopwatch(self._metrics, "matching"):
             decisions = self._decide(frame, detections, observations)
@@ -271,9 +343,18 @@ class FaceIdentityPipeline:
         return states, new_tracks
 
     def _observe_faces(
-        self, frame: Frame, detections: Sequence[Detection], states: Sequence
+        self,
+        frame: Frame,
+        detections: list[Detection],
+        states: list,
+        new_tracks: list[int],
     ) -> list[FaceObservation]:
-        """Detect, align, assess and embed one face per eligible person."""
+        """Detect, align, assess and embed one face per eligible person.
+
+        ``detections`` and ``states`` may grow: a face belonging to no
+        detected person becomes a detection of its own (see
+        ``face_identity.recognize_orphan_faces``).
+        """
         observations = [FaceObservation() for _ in detections]
         self._scheduler.begin_frame(frame.index)
 
@@ -298,13 +379,40 @@ class FaceIdentityPipeline:
                         detail="cached geometry from the last recognition pass",
                     )
 
-        if not eligible:
+        # Face detection is the expensive stage. It runs when the scheduler
+        # wants a recognition pass, and otherwise only on the orphan-scan
+        # cadence -- the people that scan recovers are stationary, which is
+        # why the person detector missed them in the first place.
+        scan_for_orphans = self._recognize_orphan_faces and (
+            bool(eligible)
+            or frame.index - self._last_orphan_scan >= self._orphan_scan_interval
+        )
+        if self._recognize_orphan_faces and not scan_for_orphans:
+            # No scan this frame: keep the orphans from the last one on
+            # screen rather than letting them flicker out.
+            self._carry_face_only_tracks(frame, detections, states, observations)
+
+        if not eligible and not scan_for_orphans:
             return observations
 
         with Stopwatch(self._metrics, "face_detection"):
             faces = self._system.detector.detect(frame.image)
         self._metrics.face_detect_calls += 1
         assigned = assign_faces_to_people(faces, detections)
+
+        if scan_for_orphans:
+            self._last_orphan_scan = frame.index
+            claimed = {id(face) for face in assigned.values()}
+            orphans = [face for face in faces if id(face) not in claimed]
+            eligible.extend(
+                self._adopt_orphan_faces(
+                    frame, orphans, detections, states, observations,
+                    assigned, new_tracks,
+                )
+            )
+
+        if not eligible:
+            return observations
 
         chips: list[np.ndarray] = []
         slots: list[int] = []
@@ -330,7 +438,9 @@ class FaceIdentityPipeline:
                 frame.image, face.bbox, face.landmarks
             )
             try:
-                chip = align_face(frame.image, face.landmarks, self._system.chip_size)
+                chip = align_face(
+                    frame.image, face.landmarks, self._system.chip_size, face.bbox
+                )
             except Exception as exc:  # noqa: BLE001 - cv2 raises broadly
                 observation.failure = FailureReason.FACE_ALIGNMENT_FAILED
                 observation.detail = str(exc)
@@ -366,6 +476,130 @@ class FaceIdentityPipeline:
                 frame.index, int(observations[slot].embedding.shape[-1])
             )
         return observations
+
+
+    def _adopt_orphan_faces(
+        self,
+        frame: Frame,
+        orphans: list[FaceDetection],
+        detections: list[Detection],
+        states: list,
+        observations: list[FaceObservation],
+        assigned: dict[int, FaceDetection],
+        new_tracks: list[int],
+    ) -> list[int]:
+        """Turn faces with no person box into detections of their own.
+
+        The person detector misses people it has little to work with: someone
+        seated behind a desk, or framed by a doorway. Their face is often
+        perfectly clear, and throwing it away loses identity evidence for no
+        reason. Each orphan gets a derived person region, a detector
+        confidence of zero so nothing mistakes it for a real person detection,
+        and a track of its own so evidence still accumulates across frames.
+        """
+        adopted: list[int] = []
+        for face in orphans:
+            track_id = self._match_face_only_track(face.bbox, frame.index)
+            detection = Detection(
+                bbox=head_and_shoulders(face.bbox, frame.width, frame.height),
+                confidence=0.0,
+                class_name="person(face-only)",
+                track_id=track_id,
+            )
+            detection.face = face
+            state, is_new = self._tracks.touch(track_id, frame.index, frame.timestamp)
+            state.last_bbox = detection.bbox
+            state.recognition_cache.track_id = track_id
+            if is_new:
+                new_tracks.append(track_id)
+                self._identity_states[track_id] = TrackIdentityState(
+                    track_id=track_id,
+                    first_seen_frame=frame.index,
+                    last_seen_frame=frame.index,
+                )
+            identity_state = self._identity_states.get(track_id)
+            if identity_state is not None:
+                identity_state.last_seen_frame = frame.index
+
+            index = len(detections)
+            detections.append(detection)
+            states.append(state)
+            observations.append(FaceObservation())
+            assigned[index] = face
+            state.recognition_cache.note_recognition(frame.index, frame.timestamp)
+            adopted.append(index)
+            self._face_only_tracks[track_id] = _FaceOnlyTrack(
+                face_bbox=face.bbox, person_bbox=detection.bbox,
+                last_scanned_frame=frame.index,
+            )
+        return adopted
+
+    def _carry_face_only_tracks(
+        self,
+        frame: Frame,
+        detections: list[Detection],
+        states: list,
+        observations: list[FaceObservation],
+    ) -> None:
+        """Keep an orphan person on screen between orphan scans.
+
+        A tracked person whose recognition pass is skipped keeps showing the
+        conclusion of their last pass rather than vanishing; an orphan should
+        behave the same way. Without this they flicker in and out at the scan
+        cadence, and the frames in between have no detection for them at all.
+
+        The carry is bounded by the scan interval, so the next scan either
+        confirms the person is still there or drops them. That matters more
+        here than for a tracked person: there is no person detector
+        underneath an orphan to confirm they have not walked away.
+        """
+        present = {d.track_id for d in detections}
+        for track_id, entry in list(self._face_only_tracks.items()):
+            age = frame.index - entry.last_scanned_frame
+            if age > self._orphan_scan_interval:
+                continue
+            if track_id in present or age == 0:
+                continue
+            state = self._tracks.tracks.get(track_id)
+            if state is None or state.last_result is None:
+                continue
+            detection = Detection(
+                bbox=entry.person_bbox,
+                confidence=0.0,
+                class_name="person(face-only)",
+                track_id=track_id,
+            )
+            detection.face = FaceDetection(
+                bbox=entry.face_bbox, score=0.0, landmarks=None,
+                detail="carried from the last orphan-face scan",
+            )
+            state.last_seen_frame = frame.index
+            state.last_seen_time = frame.timestamp
+            observation = FaceObservation()
+            observation.skipped = True
+            detections.append(detection)
+            states.append(state)
+            observations.append(observation)
+
+    def _match_face_only_track(self, bbox: BBox, frame_index: int) -> int:
+        """Associate a face-only detection with the one from the last frame.
+
+        Overlap between consecutive frames is enough here: these are people
+        who are sitting still or standing in a doorway, which is exactly why
+        the person detector missed them.
+        """
+        best_id, best_iou = None, 0.0
+        for track_id, entry in list(self._face_only_tracks.items()):
+            if (frame_index - entry.last_scanned_frame
+                    > self._config.tracking.lost_track_timeout):
+                self._face_only_tracks.pop(track_id, None)
+                continue
+            overlap = _bbox_iou(bbox, entry.face_bbox)
+            if overlap > best_iou:
+                best_id, best_iou = track_id, overlap
+        if best_id is not None and best_iou >= 0.3:
+            return best_id
+        return self._tracks.synthetic_id()
 
     def _should_recognize(self, state, frame_index: int) -> bool:
         if self._scheduler.enabled:
@@ -456,7 +690,7 @@ class FaceIdentityPipeline:
                 else:
                     state.frames_unknown += 1
                 state.recognition_cache.note_result(
-                    recognition.status,
+                    _scheduler_status(decision, recognition.status),
                     recognition.identity_id,
                     recognition.similarity,
                     face=detection.face,
@@ -533,7 +767,7 @@ class FaceIdentityPipeline:
             return None
         face = max(inside, key=lambda f: f.bbox.area)
         try:
-            chip = align_face(image, face.landmarks, self._system.chip_size)
+            chip = align_face(image, face.landmarks, self._system.chip_size, face.bbox)
         except Exception:  # noqa: BLE001 - cv2 raises broadly
             return None
         return l2_normalize(self._system.encoder.embed(chip))

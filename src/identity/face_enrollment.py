@@ -213,7 +213,7 @@ class FaceEnroller:
         report.visibility = visibility.visibility
 
         try:
-            chip = align_face(image, face.landmarks, self._chip_size)
+            chip = align_face(image, face.landmarks, self._chip_size, face.bbox)
         except Exception as exc:  # noqa: BLE001 - cv2 raises broadly
             raise EnrollmentError(
                 f"could not align the face for '{person_id}' ({path}): {exc}"

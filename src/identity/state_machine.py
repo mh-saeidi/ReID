@@ -52,6 +52,9 @@ class StabilityConfig:
 
     history_size: int = 15
     min_confirmation_frames: int = 4
+    """Observations needed before a name. Floored at 2 wherever it is read:
+    one frame must never name anybody, and that guarantee cannot depend on
+    somebody leaving a configuration value alone."""
     switch_margin: float = 0.10
     lost_track_timeout: int = 30
     occlusion_hold_frames: int = 45
@@ -59,6 +62,25 @@ class StabilityConfig:
     min_evidence_weight: float = 1.0
     """Total quality-weighted evidence needed before naming anybody. Four
     pristine frames clear this; a dozen terrible ones do not."""
+
+    fast_confirmation_frames: int = 2
+    """Absolute floor on observations before a name, however strong they are.
+
+    Never 1: a single frame must never name anybody, whatever it scores.
+    """
+    strong_evidence_weight: float = 1.6
+    """Accumulated weight that confirms at ``fast_confirmation_frames``.
+
+    Counting frames alone makes a face at similarity 0.61 and quality 0.90
+    wait exactly as long as one at 0.20 and quality 0.35, which is the
+    opposite of what quality-weighted evidence is for. It also costs real
+    accuracy: measured on real footage, tracks fragment often enough that the
+    fixed ramp left strongly-matching faces unnamed in a fifth of the frames
+    they appeared in, because every new track id restarted the count.
+
+    Two observations of quality ~0.85 clear this; two mediocre ones do not,
+    and fall back to the slower ``min_confirmation_frames`` route.
+    """
 
 
 @dataclass(slots=True)
@@ -251,9 +273,15 @@ class IdentityStateMachine:
         leader_weight = state.evidence.weights_by_identity.get(leader, 0.0)
         runner_score = ranked[1][1] if len(ranked) > 1 else 0.0
 
+        # Two routes to the same bar: enough observations with adequate total
+        # weight, or fewer observations carrying strong evidence. Both respect
+        # the floor that one frame never names anybody.
         enough_evidence = (
-            state.evidence.confirmations >= config.min_confirmation_frames
+            state.evidence.confirmations >= max(2, config.min_confirmation_frames)
             and leader_weight >= config.min_evidence_weight
+        ) or (
+            state.evidence.confirmations >= max(2, config.fast_confirmation_frames)
+            and leader_weight >= config.strong_evidence_weight
         )
 
         if state.current_identity is None:

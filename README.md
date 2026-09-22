@@ -427,28 +427,52 @@ Set `reference_quality.fail_on_warnings: true` to make that fatal instead.
 `identity_confidence` is `null` until `calibrate` has been run. The system
 does not invent a probability from a cosine.
 
-### Measured results
+### Measured results, on real footage
 
-On the held-out test split (135 queries, 3 registered identities, thresholds
-fitted on a disjoint split):
+Two people enrolled from **genuine passport photographs**, then identified in
+video of them walking, talking, sitting and working. One wears glasses
+throughout the video and none in his passport photo, so that condition is real
+rather than drawn on. 261 faces labelled by eye; thresholds fitted on
+temporally disjoint blocks of the video with a guard band, so no test image is
+within 0.3 s of a calibration image.
+
+Held-out test split (99 queries):
 
 | Condition | n | accuracy | rank-1 | FAR |
 | --- | --- | --- | --- | --- |
-| normal / glasses / mask | 60 | 100 % | 100 % | 0 % |
-| pose / light / distance / blur | 60 | 100 % | 100 % | 0 % |
-| partial (heavy occlusion) | 15 | 73.3 % | 73.3 % | 0 % |
-| **overall** | **135** | **97.0 %** | **96.7 %** | **0 %** |
+| frontal | 45 | 100 % | 100 % | 0 % |
+| distant (face < 85 px) | 12 | 100 % | 100 % | 0 % |
+| turned (head rotated away) | 39 | 87.2 % | 94.9 % | 0 % |
+| false detections (must be rejected) | 3 | 100 % | — | 0 % |
+| **overall** | **99** | **94.9 %** | **97.9 %** | **0 %** |
 
-Unknown rejection: 100 %. All four failures are face *detection* failures, not
-matching failures.
+Unknown rejection 100 %; **zero identity errors** — neither registered person
+was ever named as the other. Every failure is a refusal on a near-profile
+face scoring 0.04–0.11, below the impostor maximum: accepting those would mean
+accepting false matches.
 
-**This is not a claim of 90 % real-world accuracy.** The repository contains
-four distinct real faces, every condition is a synthetic transformation of
-them, and there is no age-variation split because ageing cannot be simulated.
-What the numbers establish is that the pipeline is correctly wired and that
-genuine and impostor scores separate cleanly; what they cannot establish is a
-field identification rate. [docs/identity.md](docs/identity.md) §10 explains
-what a defensible evaluation would require.
+Running the same video end to end through `main.py video` and scoring every
+frame against the same labels: **90.4 %** under strict face-box matching,
+**94.8 %** when matching on the person box (which is recomputed every frame,
+where the face box is redrawn from the last recognition pass).
+
+Reproduce it:
+
+```bash
+python main.py identity build
+python scripts/build_video_dataset.py \
+    --video data/demo/test_video/test.mp4 \
+    --labels data/demo/test_video/test_labels.json \
+    --enrollment data/input --output data/evaluation_video
+python main.py calibrate --dataset data/evaluation_video
+python main.py evaluate-faces --dataset data/evaluation_video
+```
+
+**What this does not establish:** performance at scale (two registered
+identities), rejection of unregistered *people* (the unknown split holds false
+detections, not strangers), robustness to ageing (reference and video are
+close in time), or anything about demographics. See
+[docs/identity.md](docs/identity.md) §10.
 
 ---
 
@@ -1288,12 +1312,17 @@ These are real and worth reading before deploying.
   derive from the same photographs as the references, so they share lighting
   and session. No claim is made about LFW, IJB-C or your cameras. Measure it
   yourself with `main.py evaluate`.
-- **The 97 % on the evaluation set is not a field accuracy.** The evaluation
-  dataset holds four distinct real faces and every condition is a synthetic
-  transformation of them. A drawn mask is not a mask and a warped frontal
-  photograph is not a turned head. A defensible figure needs at least 30 real
-  identities captured separately under each condition; see
-  [docs/identity.md](docs/identity.md) §10.
+- **Two evaluation sets, and only one of them means anything.**
+  `data/evaluation_video` is real footage of real people and scores 94.9 %;
+  `data/evaluation` is synthetic transformations of four faces and scores
+  97.0 %. Quote the first. A drawn mask is not a mask.
+- **Measured on two registered identities.** Impostor scores rise with gallery
+  size, which pushes the acceptance threshold up, which costs recall. Nothing
+  measured here predicts behaviour at fifty identities.
+- **No unregistered people were tested.** The unknown split holds false face
+  detections — hands, a dark doorway — because no third person's face is
+  resolvable in the footage. Rejecting a hand is far easier than rejecting a
+  stranger.
 - **Robustness to ageing is untested.** The evaluation set has no
   age-variation split, because ageing cannot be simulated. ArcFace is trained
   on data that includes it, so some robustness is inherited — but inherited is

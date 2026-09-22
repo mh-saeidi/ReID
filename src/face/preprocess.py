@@ -311,7 +311,7 @@ class FaceCropPreprocessor(CropPreprocessor):
 
         if landmarks is not None and len(landmarks) >= 5:
             try:
-                return align_face(source, landmarks, self._chip_size)
+                return align_face(source, landmarks, self._chip_size, bbox)
             except Exception as exc:  # noqa: BLE001 - cv2 raises broadly
                 logger.debug("Face alignment failed, falling back to a crop: %s", exc)
                 if self._require_landmarks:

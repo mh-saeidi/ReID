@@ -13,11 +13,12 @@ import pytest
 from src.config.loader import config_from_dict
 from src.config.paths import ProjectPaths
 from src.core.types import BBox, Detection, Frame, RecognitionStatus
+from src.face.visibility import FaceVisibility
 from src.identity.adaptation import AdaptationConfig, GalleryAdapter
 from src.identity.decision import IdentityDecisionEngine, MatchingThresholds
 from src.identity.face_gallery import FaceEmbeddingRecord, FaceGallery, FaceIdentity
 from src.identity.factory import FaceIdentitySystem
-from src.identity.state_machine import StabilityConfig
+from src.identity.state_machine import StabilityConfig, TrackIdentityState
 from src.pipeline.face_identity_processor import (
     FaceIdentityPipeline,
     assign_faces_to_people,
@@ -119,6 +120,12 @@ def frame(index: int, size: tuple[int, int] = (640, 480)) -> Frame:
         timestamp=float(index) / 25.0,
         source_id="test",
     )
+
+
+@pytest.fixture
+def gallery_pair(config, tmp_path, known_vector):
+    """A gallery with one registered person, for state-machine level tests."""
+    return build_system(config, tmp_path, known_vector, []).gallery
 
 
 @pytest.fixture
@@ -408,3 +415,162 @@ class TestReset:
         assert pipeline.identity_state(1) is not None
         pipeline.reset()
         assert pipeline.identity_state(1) is None
+
+
+class TestOrphanFaces:
+    """A face the person detector did not account for.
+
+    Measured on real footage: a person seated behind a desk produced a YOLO26
+    box around their legs, four hundred pixels below their head, while their
+    face was perfectly clear. Dropping that face loses identity evidence for
+    no reason.
+    """
+
+    @pytest.fixture
+    def orphan_pipeline(self, config, tmp_path, known_vector):
+        # A person box far from the face, exactly as the seated case behaves.
+        detector = FakeDetector([[person((40.0, 900.0, 200.0, 1200.0))]])
+        system = build_system(
+            config, tmp_path, known_vector, [make_face((250.0, 100.0, 330.0, 200.0))]
+        )
+        return FaceIdentityPipeline(config, detector, system, use_tracking=True)
+
+    def test_a_face_with_no_person_box_is_still_identified(
+        self, orphan_pipeline
+    ) -> None:
+        for index in range(6):
+            outcome = orphan_pipeline.process(frame(index))
+        named = [d for d in outcome.result.detections if d.identity_id == "alice"]
+        assert named, "the orphan face was never identified"
+
+    def test_an_orphan_detection_declares_it_was_not_detected(
+        self, orphan_pipeline
+    ) -> None:
+        """Nothing downstream may mistake a derived region for a person the
+        detector actually found."""
+        for index in range(6):
+            outcome = orphan_pipeline.process(frame(index))
+        orphan = next(d for d in outcome.result.detections if d.identity_id == "alice")
+        assert orphan.detector_confidence == 0.0
+        assert orphan.bbox.x1 < 250.0 and orphan.bbox.x2 > 330.0, (
+            "the derived region should surround the face"
+        )
+
+    def test_an_orphan_keeps_its_track_across_frames(self, orphan_pipeline) -> None:
+        tracks = []
+        for index in range(6):
+            outcome = orphan_pipeline.process(frame(index))
+            tracks += [d.track_id for d in outcome.result.detections
+                       if d.identity_id == "alice"]
+        assert len(set(tracks)) == 1, f"the orphan fragmented into tracks {set(tracks)}"
+
+    def test_orphan_recognition_can_be_switched_off(
+        self, config, tmp_path, known_vector
+    ) -> None:
+        config.face_identity.recognize_orphan_faces = False
+        detector = FakeDetector([[person((40.0, 900.0, 200.0, 1200.0))]])
+        system = build_system(
+            config, tmp_path, known_vector, [make_face((250.0, 100.0, 330.0, 200.0))]
+        )
+        pipeline = FaceIdentityPipeline(config, detector, system, use_tracking=True)
+        for index in range(6):
+            outcome = pipeline.process(frame(index))
+        assert all(d.identity_id is None for d in outcome.result.detections)
+
+    def test_a_face_inside_a_person_box_is_not_duplicated(self, pipeline) -> None:
+        """The ordinary case must not also produce an orphan for the same face."""
+        for index in range(5):
+            outcome = pipeline.process(frame(index))
+        assert len(outcome.result.detections) == 1
+
+
+class TestEvidenceStrength:
+    """Confirmation must respond to how good the evidence is, not only to how
+    much of it there has been."""
+
+    def test_strong_evidence_confirms_sooner_than_weak(self, gallery_pair) -> None:
+        from src.identity.state_machine import IdentityStateMachine
+        from src.identity.types import IdentityObservation
+
+        config = StabilityConfig(
+            min_confirmation_frames=6, min_evidence_weight=1.0,
+            fast_confirmation_frames=2, strong_evidence_weight=1.6,
+        )
+        machine = IdentityStateMachine(config)
+
+        strong = TrackIdentityState(track_id=1)
+        for f in range(3):
+            machine.observe_face(
+                strong,
+                IdentityObservation(f, float(f), "alice", 0.62, 0.90,
+                                    FaceVisibility.FULL_FACE),
+                accepted=True,
+            )
+        assert strong.current_identity == "alice"
+
+        weak = TrackIdentityState(track_id=2)
+        for f in range(3):
+            machine.observe_face(
+                weak,
+                IdentityObservation(f, float(f), "alice", 0.21, 0.35,
+                                    FaceVisibility.PARTIAL_FACE),
+                accepted=True,
+            )
+        assert weak.current_identity is None, (
+            "weak evidence must still take the slow route"
+        )
+
+    def test_one_frame_still_never_names_anybody(self, gallery_pair) -> None:
+        """However strong. This is the floor the fast route must not breach."""
+        from src.identity.state_machine import IdentityStateMachine
+        from src.identity.types import IdentityObservation
+
+        machine = IdentityStateMachine(
+            StabilityConfig(fast_confirmation_frames=2, strong_evidence_weight=0.0,
+                            min_evidence_weight=0.0, min_confirmation_frames=1)
+        )
+        state = TrackIdentityState(track_id=1)
+        machine.observe_face(
+            state,
+            IdentityObservation(0, 0.0, "alice", 0.99, 1.0, FaceVisibility.FULL_FACE),
+            accepted=True,
+        )
+        assert state.current_identity is None
+
+
+class TestSchedulerIsToldTheTruth:
+    def test_an_accumulating_track_is_not_treated_as_a_stranger(
+        self, config, tmp_path, known_vector
+    ) -> None:
+        """The scheduler backs off geometrically on repeated unknowns. A track
+        that is matching well but not yet confirmed must not trigger that, or
+        it starves itself of the passes it needs to confirm."""
+        from src.core.types import RecognitionStatus
+
+        detector = FakeDetector([[person((200.0, 80.0, 380.0, 460.0))]])
+        system = build_system(
+            config, tmp_path, known_vector, [make_face((250.0, 100.0, 330.0, 200.0))]
+        )
+        pipeline = FaceIdentityPipeline(config, detector, system, use_tracking=True)
+        pipeline.process(frame(0))
+        cache = pipeline.track_manager.get(1).recognition_cache
+        assert cache.last_status is not RecognitionStatus.UNKNOWN
+        assert cache.consecutive_unknown == 0
+
+    def test_a_real_stranger_still_backs_off(
+        self, config, tmp_path, known_vector
+    ) -> None:
+        from src.core.types import RecognitionStatus
+
+        stranger = l2_normalize(
+            np.random.default_rng(77).normal(size=EMBED_DIM).astype(np.float32)
+        )
+        detector = FakeDetector([[person((200.0, 80.0, 380.0, 460.0))]])
+        system = build_system(config, tmp_path, known_vector, [make_face()])
+        system.encoder = ScriptedEncoder(stranger)
+        pipeline = FaceIdentityPipeline(config, detector, system, use_tracking=True)
+        for index in range(6):
+            pipeline.process(frame(index))
+        cache = pipeline.track_manager.get(1).recognition_cache
+        assert cache.last_status is RecognitionStatus.UNKNOWN
+        assert cache.consecutive_unknown > 0
