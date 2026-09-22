@@ -1,0 +1,39 @@
+# NVIDIA Jetson (JetPack 6.x / L4T 36.x) dependencies.
+#
+# The heavyweight runtimes come from JetPack, NOT from PyPI:
+#   * OpenCV        - the system python3-opencv, built with GStreamer and CUDA
+#   * TensorRT      - the JetPack python bindings
+#   * torch/vision  - the NVIDIA Jetson wheel index
+#
+# Create the environment so those remain visible:
+#
+#   sudo apt install python3-opencv python3-libnvinfer python3-libnvinfer-dev
+#   python3 -m venv --system-site-packages .venv
+#   source .venv/bin/activate
+#   pip install --extra-index-url https://pypi.jetson-ai-lab.dev/jp6/cu126 \
+#       torch torchvision onnxruntime-gpu
+#   pip install -r requirements-jetson.txt
+#
+# Verify with: python main.py system info
+
+ultralytics>=8.4.0
+
+# Assignment solver for BoT-SORT / ByteTrack association.
+lap>=0.5.12
+
+numpy>=1.26
+PyYAML>=6.0
+pydantic>=2.7
+typer>=0.12
+
+# Required to execute TensorRT engines from Python.
+pycuda>=2024.1
+
+# Deliberately absent, and must stay that way on Jetson:
+#   opencv-python   - would shadow the GStreamer-enabled system build
+#   torch           - install from the NVIDIA wheel index instead
+#   onnxruntime     - use onnxruntime-gpu for Jetson
+#
+# ultralytics depends on opencv-python. Install it with --no-deps, or pin
+# opencv-python-headless out of the way, if pip tries to pull it in:
+#   pip install --no-deps ultralytics

@@ -1,0 +1,202 @@
+# ---------------------------------------------------------------------------
+# Default configuration for the YOLO26 one-shot person ReID system.
+#
+# Every value here can be overridden by the file you pass with --config.
+# Relative paths resolve against the directory of the configuration file.
+# ---------------------------------------------------------------------------
+
+application:
+  name: "YOLO26 Person ReID"
+  version: "1.0.0"
+  log_level: "INFO"        # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  log_file: null           # e.g. "data/output/app.log"
+  json_logs: false
+
+models:
+  # Person detector. Any YOLO26 scale works: yolo26n/s/m/l/x.pt
+  detector: "models/yolo26n.pt"
+  # ReID appearance encoder. Official exports: yolo26{n,s,m,l,x}-reid.onnx
+  # A .pt Ultralytics classification checkpoint (e.g. yolo26n-cls.pt) also works.
+  reid: "models/yolo26n-reid.onnx"
+
+device:
+  device: "auto"           # auto | cpu | cuda | mps  (auto: CUDA -> MPS -> CPU)
+  fp16: true               # ignored where the device does not support it
+  cuda_index: 0
+
+detector:
+  imgsz: 640
+  confidence: 0.35
+  iou: 0.50
+  person_class_id: 0       # COCO 'person'
+  classes: ["person"]
+  max_detections: 50
+  agnostic_nms: false
+  half: null               # null inherits device.fp16
+
+reid:
+  backend: "auto"          # auto | ultralytics | onnx | torchscript
+  input_size: [256, 128]   # [height, width]; a model's static shape wins
+  similarity_metric: "cosine"
+  normalize: true
+  batch_size: 16
+  crop_padding: 0.0
+  min_crop_size: 16
+  embed_layer: null        # .pt backend only; null = second-to-last layer
+
+recognition:
+  mode: "person_reid"      # person appearance ReID (face mode is future work)
+
+matching:
+  metric: "cosine"
+  # EMPIRICAL, NOT UNIVERSAL. 0.70 was measured with 'main.py evaluate'
+  # on the bundled demo set using yolo26n-reid.onnx. Re-measure yours:
+  #   python main.py evaluate --dataset data/demo/evaluation
+  recognition_threshold: 0.70
+  high_confidence_threshold: 0.80
+  ambiguity_margin: 0.0    # reject when the top-2 identities are this close
+  unknown_label: "Unknown"
+  top_k: 3
+
+tracking:
+  enabled: true
+  tracker: "botsort.yaml"  # botsort.yaml | bytetrack.yaml | path to your own
+  persist: true
+  track_buffer: 30         # frames a lost track survives (occlusion tolerance)
+  with_reid: true          # BoT-SORT appearance cue for association
+  reid_model: "auto"       # auto (detector features) | gallery | explicit path
+  lost_track_timeout: 30   # frames before identity state for a track is dropped
+  overrides: {}            # advanced passthrough into the tracker YAML
+
+  identity_stability:
+    enabled: true
+    strategy: "weighted_vote"   # weighted_vote | ema | majority
+    history_size: 10
+    minimum_recognized_frames: 3
+    switch_margin: 0.08
+    decay: 0.9
+    identity_persistence_frames: 15
+
+enrollment:
+  require_single_person: true
+  selection_strategy: "largest_person"   # largest_person | highest_confidence | center_most
+  regenerate_missing_embeddings: true
+  detector_confidence: null              # optional lower threshold for reference images
+  save_normalized_crop: true
+  crop_dir: "data/gallery/crops"
+  quality:
+    enabled: true
+    min_bbox_height: 64
+    min_bbox_width: 32
+    min_crop_area_ratio: 0.02
+    min_blur_variance: 25.0
+    min_brightness: 25.0
+    max_brightness: 235.0
+    min_aspect_ratio: 1.2
+    truncation_border_tolerance: 2
+    fail_on_warnings: false
+
+gallery:
+  store: "local_numpy"
+  directory: "data/gallery"
+  embeddings_subdir: "embeddings"
+  metadata_subdir: "metadata"
+  auto_build: true
+  revalidate_on_load: true
+
+source:
+  type: "webcam"
+  device: 0
+  path: null
+  width: null
+  height: null
+  fps: null
+  buffer_size: 1
+  loop: false
+  recursive: false
+  extensions: [".jpg", ".jpeg", ".png", ".webp", ".bmp"]
+
+output:
+  directory: "data/output"
+  save_snapshots: true
+  snapshot_mode: "recognized"   # all | recognized | unknown | events_only | disabled
+  snapshot_dir: "snapshots"
+  snapshot_cooldown_seconds: 5.0
+  save_crops: false
+  crops_dir: "crops"
+  save_metadata: true
+  metadata_dir: "metadata"
+  save_video: true
+  videos_dir: "videos"
+  annotated_image_dir: "images"
+  codec: "mp4v"
+  video_fps: null
+  overwrite: false              # false: never clobber, append _1, _2, ...
+  jpeg_quality: 92
+
+recording:
+  mode: "disabled"              # continuous | event | disabled
+  save_when_identity_detected: true
+  save_unknown: false
+  pre_event_seconds: 3.0        # ring buffer: the clip starts BEFORE the event
+  post_event_seconds: 5.0
+  max_clip_seconds: 120.0
+  filename_prefix: "event"
+
+performance:
+  reid_interval: 1              # >1 reuses a track's embedding between runs
+  embedding_cache: true
+  batch_size: 16
+  max_detections: 50
+  force_reid_on_new_track: true
+  force_reid_when_unknown: true
+  frame_stride: 1
+
+display:
+  show_window: true
+  window_name: "YOLO26 Person ReID"
+  show_metrics: true
+  show_track_id: true
+  show_similarity: true
+  show_title: true
+  box_thickness: 2
+  font_scale: 0.5
+  colors:                        # BGR
+    recognized: [60, 200, 60]
+    low_confidence: [40, 190, 235]
+    unknown: [70, 70, 230]
+    rejected: [180, 120, 255]
+    pending: [170, 170, 170]
+
+events:
+  enabled: true
+  log_to_file: true
+  directory: "events"
+  filename: "events.jsonl"
+  console: false
+
+retention:
+  enabled: false                 # opt in; 0 days means "keep forever"
+  snapshots_days: 30
+  videos_days: 30
+  events_days: 90
+  crops_days: 30
+  metadata_days: 90
+
+debug:
+  enabled: false
+  directory: "debug"
+  save_frames: false
+  save_crops: true
+  save_matches: true
+  save_track_state: true
+  max_frames: 200
+
+api:
+  enabled: false
+  host: "127.0.0.1"
+  port: 8000
+  allow_upload: true
+  max_upload_mb: 25
+
+people: []

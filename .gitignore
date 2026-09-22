@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Models are large binaries; fetch them with the setup commands in README.md.
+models/*
+!models/.gitkeep
+
+# Generated output and biometric-like material: never commit it.
+data/output/
+data/gallery/embeddings/
+data/gallery/metadata/
+data/gallery/crops/
+data/input/*
+!data/input/.gitkeep
+
+# Demo source photographs are re-downloadable; the derived demo data is kept.
+data/demo/_sources/
+
+.env
+.DS_Store

@@ -1,0 +1,38 @@
+# Core runtime dependencies. Python 3.11+ required.
+#
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# DO NOT install this file as-is on an NVIDIA Jetson.
+# torch, torchvision, onnxruntime and opencv-python all resolve to wheels that
+# are either unavailable or wrong for aarch64/JetPack, and inside a
+# --system-site-packages venv they shadow JetPack's CUDA-enabled builds and the
+# system OpenCV that provides GStreamer. See docs/jetson.md for the Jetson
+# installation procedure.
+
+# Detection + tracking + official YOLO26 ReID assets.
+ultralytics>=8.4.0
+
+# Pulled in by ultralytics; pinned to a floor that supports YOLO26.
+torch>=2.2
+torchvision>=0.17
+
+# ONNX Runtime backend for the exported ReID encoders.
+# Swap for onnxruntime-gpu on a CUDA host.
+onnxruntime>=1.18
+onnx>=1.16          # AutoBackend reads ONNX metadata at load time
+
+# Linear-assignment solver used by the BoT-SORT / ByteTrack association step.
+# Ultralytics auto-installs it on first use; pinning it here avoids that.
+lap>=0.5.12
+
+opencv-python>=4.9
+numpy>=1.26
+PyYAML>=6.0
+pydantic>=2.7
+typer>=0.12
+
+# Optional REST API (src/api). The CLI does not need these.
+# fastapi>=0.110
+# uvicorn[standard]>=0.29
+# python-multipart>=0.0.9

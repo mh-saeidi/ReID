@@ -1,0 +1,97 @@
+# ---------------------------------------------------------------------------
+# Production profile: headless, event-driven recording, retention enabled.
+#
+#   python main.py stream --input rtsp://... --config configs/production.yaml
+#
+# Paths here resolve against configs/, hence the leading "../".
+# ---------------------------------------------------------------------------
+
+application:
+  log_level: "INFO"
+  log_file: "../data/output/person-reid.log"
+  json_logs: true
+
+models:
+  detector: "../models/yolo26s.pt"        # a larger detector for fixed cameras
+  reid: "../models/yolo26s-reid.onnx"
+
+device:
+  device: "auto"
+  fp16: true
+
+detector:
+  imgsz: 960
+  confidence: 0.40
+  iou: 0.50
+  max_detections: 100
+
+reid:
+  input_size: [256, 128]
+  batch_size: 32
+
+matching:
+  recognition_threshold: 0.75      # stricter than the default; calibrate before deploying
+  high_confidence_threshold: 0.85
+  ambiguity_margin: 0.05           # refuse to guess between look-alikes
+
+tracking:
+  enabled: true
+  tracker: "botsort.yaml"
+  track_buffer: 60                 # longer occlusion tolerance
+  with_reid: true
+  lost_track_timeout: 60
+  identity_stability:
+    enabled: true
+    strategy: "weighted_vote"
+    history_size: 20
+    minimum_recognized_frames: 5
+    switch_margin: 0.10
+    identity_persistence_frames: 30
+
+performance:
+  reid_interval: 3                 # embed a stable track every 3rd frame
+  embedding_cache: true
+  batch_size: 32
+  max_detections: 100
+
+display:
+  show_window: false               # headless
+  show_metrics: false
+
+output:
+  directory: "../data/output"
+  save_snapshots: true
+  snapshot_mode: "events_only"
+  snapshot_cooldown_seconds: 30.0
+  save_crops: false
+  save_metadata: true
+  save_video: false                # rely on event clips instead
+  overwrite: false
+
+recording:
+  mode: "event"
+  save_when_identity_detected: true
+  save_unknown: false
+  pre_event_seconds: 5.0
+  post_event_seconds: 8.0
+  max_clip_seconds: 120.0
+
+events:
+  enabled: true
+  log_to_file: true
+  console: false
+
+retention:
+  enabled: true
+  snapshots_days: 30
+  videos_days: 14
+  events_days: 90
+  crops_days: 14
+  metadata_days: 30
+
+api:
+  enabled: false
+  host: "127.0.0.1"
+  port: 8000
+
+people: []

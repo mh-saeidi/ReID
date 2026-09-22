@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yolo26-person-reid"
+version = "1.0.0"
+description = "One-shot person re-identification built on YOLO26 detection and ReID embeddings"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: tests that load real models or need network access",
+    "integration: end-to-end tests across several components",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "data", "models"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RET", "ARG", "PTH"]
+ignore = [
+    "E501",     # line length is handled by the formatter
+    "B008",     # Typer declares defaults via function calls by design
+    "RET504",   # a named return value is often clearer
+    "SIM108",   # ternaries are not always more readable
+    "ARG002",   # interface methods keep arguments they do not use
+    "PTH123",   # open() is fine where a Path is already in hand
+    "UP042",    # `str, Enum` is deliberate: stable JSON/YAML values everywhere
+    "B027",     # empty ABC methods are intentional optional hooks (close(), ...)
+    "ARG005",   # scenario factories share one signature by design
+    "SIM102",   # nested ifs are clearer where each guard is separately commented
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "S101"]
+"src/cli/*" = ["B006", "UP007", "ARG001"]

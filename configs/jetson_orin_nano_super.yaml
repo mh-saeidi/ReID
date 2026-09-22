@@ -1,0 +1,231 @@
+# ---------------------------------------------------------------------------
+# NVIDIA Jetson Orin Nano Super (8 GB) deployment profile.
+#
+#   python main.py system info                    # confirm what is detected
+#   python main.py models build-tensorrt --config configs/jetson_orin_nano_super.yaml
+#   python main.py gallery build                  --config configs/jetson_orin_nano_super.yaml
+#   python main.py webcam                         --config configs/jetson_orin_nano_super.yaml
+#
+# Paths resolve against configs/, hence the leading "../".
+#
+# NOTE ON THE VALUES BELOW: they are engineering defaults chosen for an 8 GB
+# Orin Nano, not measurements taken on one. No Jetson was available when this
+# profile was written. Run `main.py benchmark-suite matrix` on the target and adjust
+# batch size, intervals and queue depths from the results.
+#
+# Every value here is ordinary configuration; nothing about Jetson is
+# hard-coded in the pipeline, and this file runs on any machine (falling back
+# to whatever backends that machine has).
+# ---------------------------------------------------------------------------
+
+application:
+  log_level: "INFO"
+  json_logs: true
+  log_file: "../data/output/person-reid.log"
+
+models:
+  # Export the detector to ONNX so a TensorRT engine can be built from it:
+  #   yolo export model=yolo26n.pt format=onnx dynamic=True opset=17
+  # The .pt is kept as the source of truth; if the .onnx is absent the system
+  # falls back to running the .pt through PyTorch.
+  detector: "../models/yolo26n.onnx"
+  reid: "../models/yolo26n-reid.onnx"
+
+# ---------------------------------------------------------------------------
+# Inference backends
+# ---------------------------------------------------------------------------
+backend:
+  detector: "auto"         # auto -> TensorRT on a Jetson that has it
+  face_detector: "auto"    # YuNet runs on OpenCV DNN; no TensorRT path needed
+  face_encoder: "auto"
+  tensorrt:
+    enabled: "auto"
+    precision: "fp16"      # FP16 is the Jetson deployment precision
+    # INT8 stays off. Quantising a face encoder shifts the embedding
+    # distribution and invalidates the calibrated similarity thresholds; it
+    # needs its own calibration set and a re-run of `main.py evaluate`.
+    allow_int8_for_face: false
+    workspace_mb: 1024     # Orin Nano shares 8 GB between CPU and GPU
+    min_batch_size: 1
+    optimal_batch_size: 4
+    max_batch_size: 8
+    engine_dir: "../models/engines"
+    allow_build: true
+    builder_optimization_level: 3
+    strict_version_check: true
+
+device:
+  device: "auto"           # -> cuda on Jetson
+  fp16: true
+
+detector:
+  imgsz: 640               # 640 at 1280x720 capture is the throughput sweet spot
+  confidence: 0.40
+  iou: 0.50
+  max_detections: 20       # bounds worst-case frame cost in a crowd
+
+recognition:
+  mode: "face"
+  batch:
+    enabled: true
+    # 8 is a starting point for 8 GB, not a measured optimum. Benchmark
+    # 1/2/4/8 on the target: `main.py benchmark-suite matrix -g batch`.
+    max_size: 8
+
+face:
+  detector_model: "../models/face_detection_yunet_2023mar.onnx"
+  recognition_model: "../models/w600k_r50.onnx"
+  detection_confidence: 0.6
+  align: true
+  require_landmarks: true
+  min_face_size: 36
+  min_eye_distance: 12.0
+  search_region: "upper_body"
+  identity_hold_frames: 45
+
+  runtime_quality:
+    enabled: true
+    # Unset thresholds inherit the face.* values above, so this section only
+    # adds the detector-confidence floor.
+    min_detector_confidence: 0.6
+
+  adaptive_search:
+    # Off until measured on the target: whole-frame search is not automatically
+    # faster, and at 1280x720 a single full-frame YuNet pass can cost more than
+    # several small ROI passes.
+    enabled: false
+    crowd_threshold: 5
+
+matching:
+  # Unset would pick the face-mode default (0.45/0.60). Pinned explicitly here
+  # so a deployment profile never drifts with a library default.
+  recognition_threshold: 0.45
+  high_confidence_threshold: 0.60
+  unknown_label: "Unknown"
+  no_face_label: "No face"
+
+# ---------------------------------------------------------------------------
+# Recognition scheduling: the single biggest CPU/GPU saving
+# ---------------------------------------------------------------------------
+recognition_scheduler:
+  enabled: true
+  stable_interval: 6
+  unknown_interval: 3
+  low_confidence_interval: 3
+  no_face_interval: 2
+  force_on_new_track: true
+  force_on_recovery: true
+  force_when_identity_changes: true
+  unknown_backoff_enabled: true
+  unknown_backoff_factor: 1.7
+  unknown_backoff_max_interval: 30
+  max_recognitions_per_frame: 6    # bounds worst-case latency in a crowd
+
+tracking:
+  enabled: true
+  tracker: "botsort.yaml"
+  track_buffer: 45
+  with_reid: false          # the face gives identity; the tracker only needs motion
+  lost_track_timeout: 45
+  identity_stability:
+    enabled: true
+    strategy: "weighted_vote"
+    history_size: 10
+    minimum_recognized_frames: 3
+    switch_margin: 0.08
+    identity_persistence_frames: 15
+
+# ---------------------------------------------------------------------------
+# Asynchronous pipeline with low-latency queues
+# ---------------------------------------------------------------------------
+pipeline:
+  async: true
+  capture_queue_size: 2     # shallow on purpose: latency over buffering
+  detection_queue_size: 2
+  recognition_queue_size: 2
+  output_queue_size: 4
+  drop_stale_frames: true   # a live view must not fall seconds behind
+  overload_policy: "drop_visualization"
+  output_workers: 1         # one worker keeps video and metadata ordered
+  shutdown_timeout_s: 10.0
+
+performance:
+  reid_interval: 3          # only used when the scheduler is disabled
+  embedding_cache: true
+  max_detections: 20
+  frame_stride: 1
+
+# ---------------------------------------------------------------------------
+# Camera
+# ---------------------------------------------------------------------------
+source:
+  type: "jetson_camera"
+  csi: "auto"               # CSI via nvarguscamerasrc, else V4L2
+  sensor_id: 0
+  device: 0
+  width: 1280
+  height: 720
+  fps: 30
+  flip_method: 0
+  # capture_width/height let the sensor run higher and GStreamer scale once,
+  # instead of Python resizing a full-resolution frame afterwards:
+  # capture_width: 1920
+  # capture_height: 1080
+
+display:
+  show_window: false        # headless by default
+  show_metrics: false
+  show_face_box: true
+
+output:
+  directory: "../data/output"
+  save_snapshots: true
+  snapshot_mode: "events_only"
+  snapshot_cooldown_seconds: 30.0
+  save_crops: false
+  save_metadata: true
+  save_video: false         # rely on event clips instead of a continuous file
+  overwrite: false
+
+recording:
+  mode: "event"
+  backend: "auto"           # NVIDIA hardware encoder when GStreamer exposes it
+  codec: "h264"
+  hardware_acceleration: true
+  bitrate_kbps: 4000
+  save_when_identity_detected: true
+  save_unknown: false
+  pre_event_seconds: 3.0
+  post_event_seconds: 5.0
+  max_clip_seconds: 120.0
+  async_write: true
+
+events:
+  enabled: true
+  log_to_file: true
+  console: false
+
+retention:
+  enabled: true
+  snapshots_days: 30
+  videos_days: 14
+  events_days: 90
+
+# ---------------------------------------------------------------------------
+# Performance targets for this profile only.
+#
+# These are ENGINEERING TARGETS, not measured results. `main.py benchmark
+# --check-targets` reports PASS/WARN/FAIL against them on the actual hardware.
+# ---------------------------------------------------------------------------
+benchmark:
+  warmup_frames: 20
+  measure_frames: 300
+  collect_system_telemetry: true
+  targets:
+    enabled: true
+    minimum_fps: 25.0
+    maximum_p95_latency_ms: 120.0
+    maximum_drop_rate_percent: 5.0
+    warn_margin_percent: 10.0
+
+people: []
