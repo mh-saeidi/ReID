@@ -279,7 +279,7 @@ The face models are **already ONNX** and need no export step:
 | SFace | `models/face_recognition_sface_2021dec.onnx` | Alternative face encoder — OpenCV `FaceRecognizerSF` |
 | ArcFace w600k_r50 | `models/w600k_r50.onnx` | Face encoder used by the Jetson profile; this is the one with a TensorRT path |
 
-Fetch them with `python scripts/fetch_face_models.py`.
+Fetch them with `python scripts/fetch_face_models.py`, which pulls SCRFD and ArcFace from the InsightFace buffalo_l bundle and YuNet from the OpenCV zoo.
 
 ---
 
@@ -389,6 +389,57 @@ python main.py models clean-engines -c configs/jetson_orin_nano_super.yaml --yes
 
 Deletes every engine and sidecar in `engine_dir`. Prompts unless `--yes`/`-y` is
 given. **Source models are never touched.**
+
+---
+
+## 6b. The passport-photo identity engine on Jetson
+
+The identity stack described in [identity.md](identity.md) becomes the active
+path as soon as people are enrolled into the face gallery. Three things about
+it are Jetson-specific.
+
+**SCRFD is not accelerated by `models build-tensorrt`.** That command builds
+engines through the project's own `TensorRTSession`, which returns a single
+output tensor; SCRFD emits nine (three FPN strides × score/bbox/landmark).
+It is accelerated instead by ONNX Runtime's TensorRT execution provider,
+which handles multi-output graphs and compiles its own engine on first use.
+Nothing to run — it happens automatically when `onnxruntime-gpu` exposes
+`TensorrtExecutionProvider`. The engine is cached under
+`backend.tensorrt.engine_dir/scrfd`.
+
+> **Expect the first load after deployment to take minutes**, not seconds,
+> while that engine compiles. Subsequent loads read the cache. Do a warm-up
+> run before anything depends on start-up time, and keep the cache directory
+> on persistent storage.
+
+**The face encoder *is* built by `models build-tensorrt`.** Both
+`face_identity.face_encoder_model` and `face.recognition_model` are covered,
+so whichever path is active is accelerated. When they are the same file, one
+engine is built.
+
+**The orphan-face scan is the first thing to turn down.** Identifying a face
+whose body the person detector missed costs one extra SCRFD pass on frames
+where no tracked person is due for recognition. On the reference footage
+`orphan_scan_interval: 1` gave 90.4% at 11.4 FPS and `3` gave 89.6% at
+16.3 FPS — on desktop hardware, but the shape of the trade holds. The Jetson
+profile ships `3`. Setting `recognize_orphan_faces: false` removes the cost
+entirely at the price of never identifying a seated or doorway-framed person.
+
+### Thresholds do not travel
+
+Acceptance thresholds are fitted to a camera and a scene. A threshold
+calibrated on other footage is worse than none, because it is confidently
+wrong rather than visibly absent. The Jetson profile therefore ships **no**
+pinned thresholds: until `calibrate` has been run on footage from the
+deployed camera, the system uses `fallback_threshold` and says so in the
+startup log and in `config validate`.
+
+```
+python main.py config validate --config configs/jetson_orin_nano_super.yaml
+```
+
+prints which identity path is active, how many people are enrolled, and
+whether a calibration exists.
 
 ---
 

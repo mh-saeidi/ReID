@@ -172,15 +172,15 @@ from ultralytics.utils.downloads import attempt_download_asset; \
 attempt_download_asset('yolo26n.pt')" 2>/dev/null || \
   python main.py config validate --check-models   # also triggers the download
 
-# Face detector + face recogniser
-python scripts/fetch_face_models.py              # YuNet + ArcFace  (~175 MB)
-python scripts/fetch_face_models.py --tier lite  # YuNet + SFace    (~39 MB)
+# Face models
+python scripts/fetch_face_models.py              # SCRFD + ArcFace + YuNet (~192 MB)
+python scripts/fetch_face_models.py --tier lite  # YuNet + SFace only       (~39 MB)
 ```
 
 | Role | Default | Alternatives |
 | --- | --- | --- |
 | Person detector | `yolo26n.pt` | `yolo26s/m/l/x.pt` |
-| Face detector | `face_detection_yunet_2023mar.onnx` | any YuNet build |
+| Face detector | `scrfd_10g.onnx` (SCRFD, identity engine) | `face_detection_yunet_2023mar.onnx` via `face_identity.face_detector_backend: yunet` — faster, and measurably worse at score separation |
 | Face encoder | `w600k_r50.onnx` (ArcFace, 512-D) | `face_recognition_sface_2021dec.onnx` (SFace, 128-D), `glintr100.onnx`, any ArcFace-format ONNX |
 | Body encoder (`person_reid` mode only) | `yolo26n-reid.onnx` | `yolo26s/m/l/x-reid.onnx`, any `.onnx`, or a `.pt` Ultralytics checkpoint |
 

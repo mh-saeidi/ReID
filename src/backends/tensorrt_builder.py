@@ -384,9 +384,20 @@ def default_build_requests(config, paths) -> list[BuildRequest]:
         )
 
     if config.recognition.mode is RecognitionMode.FACE:
-        encoder = paths.resolve(config.face.recognition_model)
-        if encoder.suffix.lower() == ".onnx":
-            chip = config.face.chip_size
+        # Both face paths may be present: the passport-photo identity engine
+        # has its own encoder setting, and it is the one that runs once people
+        # are enrolled into the face gallery. Build an engine for each distinct
+        # model so whichever path is active is accelerated.
+        seen: set[Path] = set()
+        candidates = [
+            (paths.resolve(config.face_identity.face_encoder_model),
+             config.face_identity.chip_size),
+            (paths.resolve(config.face.recognition_model), config.face.chip_size),
+        ]
+        for encoder, chip in candidates:
+            if encoder in seen or encoder.suffix.lower() != ".onnx":
+                continue
+            seen.add(encoder)
             requests.append(
                 BuildRequest("face_encoder", encoder, (3, chip, chip), input_name="input")
             )

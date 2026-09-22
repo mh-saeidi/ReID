@@ -99,6 +99,8 @@ class SCRFDFaceDetector(FaceDetector):
         input_size: tuple[int, int] = (640, 640),
         device: Any = None,
         max_faces: int = 100,
+        trt_cache_dir: str | Path | None = None,
+        trt_fp16: bool = True,
     ) -> None:
         self._model_path = str(model_path)
         self._confidence = confidence
@@ -106,6 +108,8 @@ class SCRFDFaceDetector(FaceDetector):
         self._input_size = input_size
         self._device = device
         self._max_faces = max_faces
+        self._trt_cache_dir = trt_cache_dir
+        self._trt_fp16 = trt_fp16
         self._session: Any = None
         self._input_name = ""
         self._output_names: list[str] = []
@@ -130,10 +134,30 @@ class SCRFDFaceDetector(FaceDetector):
                 "Fetch it with: python scripts/fetch_face_models.py"
             )
 
-        providers = ["CPUExecutionProvider"]
+        providers: list[Any] = ["CPUExecutionProvider"]
         available = set(ort.get_available_providers())
-        if getattr(self._device, "is_cuda", False) and "CUDAExecutionProvider" in available:
-            providers.insert(0, "CUDAExecutionProvider")
+        if getattr(self._device, "is_cuda", False):
+            if "CUDAExecutionProvider" in available:
+                providers.insert(0, "CUDAExecutionProvider")
+            # TensorRT through ONNX Runtime rather than the project's own
+            # TensorRTSession: that session returns one output tensor and
+            # SCRFD emits nine. The provider compiles and caches its own
+            # engine, so the first load on a new device is slow (minutes) and
+            # every later one is fast. It sits ahead of CUDA in the list; ONNX
+            # Runtime falls back through the list on its own if the engine
+            # cannot be built.
+            if "TensorrtExecutionProvider" in available and self._trt_cache_dir:
+                cache = Path(self._trt_cache_dir)
+                cache.mkdir(parents=True, exist_ok=True)
+                providers.insert(0, (
+                    "TensorrtExecutionProvider",
+                    {
+                        "trt_fp16_enable": bool(self._trt_fp16),
+                        "trt_engine_cache_enable": True,
+                        "trt_engine_cache_path": str(cache),
+                        "trt_timing_cache_enable": True,
+                    },
+                ))
 
         started = time.perf_counter()
         try:

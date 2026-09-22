@@ -3,8 +3,10 @@
 #
 #   python main.py system info                    # confirm what is detected
 #   python main.py models build-tensorrt --config configs/jetson_orin_nano_super.yaml
-#   python main.py gallery build                  --config configs/jetson_orin_nano_super.yaml
-#   python main.py webcam                         --config configs/jetson_orin_nano_super.yaml
+#   python main.py identity build        --config configs/jetson_orin_nano_super.yaml
+#   python main.py calibrate --dataset <your data> \
+#                                        --config configs/jetson_orin_nano_super.yaml
+#   python main.py webcam                --config configs/jetson_orin_nano_super.yaml
 #
 # Paths resolve against configs/, hence the leading "../".
 #
@@ -36,7 +38,12 @@ models:
 # ---------------------------------------------------------------------------
 backend:
   detector: "auto"         # auto -> TensorRT on a Jetson that has it
-  face_detector: "auto"    # YuNet runs on OpenCV DNN; no TensorRT path needed
+  # SCRFD is an ONNX model and IS accelerated on Jetson -- but through ONNX
+  # Runtime's TensorRT execution provider, not this setting, because it emits
+  # nine output tensors and the shared engine runtime returns one. The
+  # provider compiles and caches its own engine under backend.tensorrt
+  # .engine_dir/scrfd; expect the FIRST load after deployment to take minutes.
+  face_detector: "auto"
   face_encoder: "auto"
   tensorrt:
     enabled: "auto"
@@ -71,6 +78,58 @@ recognition:
     # 8 is a starting point for 8 GB, not a measured optimum. Benchmark
     # 1/2/4/8 on the target: `main.py benchmark-suite matrix -g batch`.
     max_size: 8
+
+# ---------------------------------------------------------------------------
+# The passport-photo identity engine.
+#
+# This is the active identity path once people are enrolled into the face
+# gallery (`identity build`); with an empty gallery the older person-gallery
+# path runs instead, and the startup log says which. Paths are relative to
+# configs/, hence "../".
+# ---------------------------------------------------------------------------
+face_identity:
+  enabled: true
+  gallery_dir: "../data/people"
+  face_detector_model: "../models/scrfd_10g.onnx"
+  face_detector_backend: "scrfd"
+  face_encoder_model: "../models/w600k_r50.onnx"
+  calibration_file: "../data/people/calibration.json"
+
+  # 0.40 rather than 0.50: measured on real footage, 0.50 misses faces a human
+  # reads as clearly visible. Re-measure on the deployed camera.
+  face_detector_confidence: 0.40
+
+  # Thresholds are deliberately absent. They must come from `calibrate` run on
+  # footage from THIS camera: a different sensor and different lighting shift
+  # the score distribution, and a threshold fitted elsewhere is worse than
+  # none. Until then the system uses fallback_threshold and says so.
+
+  # Identify a face whose body the person detector missed -- someone seated
+  # behind a desk, or framed by a doorway. Each scan costs one SCRFD pass, so
+  # on an Orin Nano this is the setting to raise first if the frame rate is
+  # short: 1 is the most accurate, 3 costs about a point of accuracy and
+  # roughly 40% more throughput on the reference footage.
+  recognize_orphan_faces: true
+  orphan_scan_interval: 3
+
+# ---------------------------------------------------------------------------
+# Temporal evidence
+# ---------------------------------------------------------------------------
+temporal:
+  enabled: true
+  min_confirmation_frames: 4
+  # Two strong observations name somebody instead of four mediocre ones. This
+  # matters on a device where the scheduler is throttling passes: without it a
+  # track that is matching well stays unnamed while it waits its turn.
+  fast_confirmation_frames: 2
+  strong_evidence_weight: 1.6
+  occlusion_hold_frames: 45
+  unknown_frames_to_release: 12
+
+online_adaptation:
+  # Off. Growing the gallery from live observations on an unattended device is
+  # how a gallery quietly fills with the wrong face.
+  enabled: false
 
 face:
   detector_model: "../models/face_detection_yunet_2023mar.onnx"
@@ -111,7 +170,10 @@ recognition_scheduler:
   enabled: true
   stable_interval: 6
   unknown_interval: 3
-  low_confidence_interval: 3
+  # 1, not 3. A track that is accumulating evidence toward a name is neither
+  # already known nor hopeless, and every frame it waits is a frame the person
+  # goes unnamed. This is the cheapest place to spend a pass.
+  low_confidence_interval: 1
   no_face_interval: 2
   force_on_new_track: true
   force_on_recovery: true
@@ -228,4 +290,6 @@ benchmark:
     maximum_drop_rate_percent: 5.0
     warn_margin_percent: 10.0
 
+# One passport-style photograph per person, then `identity build`.
+# Keep this list in the deployment's own copy of the profile.
 people: []

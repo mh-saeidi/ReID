@@ -3,23 +3,26 @@
 
 Two tiers are available:
 
-**default** (~175 MB)
-    YuNet face detector + InsightFace's ArcFace ``w600k_r50`` recogniser. This
-    is what ``config.yaml`` points at, and it is the stronger of the two on
-    pose, age and low light. Measured on the bundled demo set it separates
-    genuine from impostor faces by 0.76 of cosine similarity.
+**default** (~192 MB)
+    SCRFD-10G and ArcFace ``w600k_r50``, both extracted from InsightFace's
+    buffalo_l bundle, plus the YuNet detector. This is what ``config.yaml``
+    points at. SCRFD is the detector the identity engine uses: its landmarks
+    align faces well enough that genuine and impostor score distributions
+    separate, where YuNet's leave them overlapping (+0.409 against -0.179 on
+    this project's evaluation footage -- see docs/identity.md section 3).
 
 **lite** (~39 MB, nothing but OpenCV needed to run it)
     YuNet + SFace, both from the OpenCV Model Zoo. Smaller and faster, with a
-    narrower but still clean margin (0.59 on the same data). Use it on
-    constrained hardware, then set::
+    narrower margin. Use it on constrained hardware, then set::
 
+        face_identity:
+          face_detector_backend: "yunet"
         face:
           recognition_model: "models/face_recognition_sface_2021dec.onnx"
 
 Usage::
 
-    python scripts/fetch_face_models.py                # default (ArcFace)
+    python scripts/fetch_face_models.py                # default
     python scripts/fetch_face_models.py --tier lite
     python scripts/fetch_face_models.py --tier all --force
 """
@@ -49,12 +52,19 @@ SFACE = (
     f"{ZOO}/face_recognition_sface/face_recognition_sface_2021dec.onnx",
 )
 
-# ArcFace ships inside the InsightFace buffalo_l bundle; only the recognition
-# model is extracted, so none of the unrelated auxiliary models are installed.
+# ArcFace and SCRFD both ship inside the InsightFace buffalo_l bundle. Only
+# the two models this system uses are extracted, so none of the unrelated
+# auxiliary models are installed. One download covers both.
 BUFFALO_L_URL = (
     "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
 )
-ARCFACE_MEMBER = "w600k_r50.onnx"
+# (member name inside the bundle, name written to models/)
+BUFFALO_MEMBERS = (
+    ("w600k_r50.onnx", "w600k_r50.onnx"),
+    # Renamed on extraction: "det_10g" says nothing about what it is, and
+    # every reference in this project calls the architecture SCRFD.
+    ("det_10g.onnx", "scrfd_10g.onnx"),
+)
 
 
 def _progress(count: int, block: int, total: int) -> None:
@@ -83,35 +93,51 @@ def download(url: str, target: Path, *, force: bool) -> bool:
     return True
 
 
-def fetch_arcface(*, force: bool) -> bool:
-    target = MODELS / ARCFACE_MEMBER
-    if target.exists() and not force:
-        print(f"  keeping existing {target.name} ({target.stat().st_size / 1e6:.1f} MB)")
+def fetch_buffalo_models(*, force: bool) -> bool:
+    """Extract the models this system uses from the buffalo_l bundle.
+
+    The bundle is downloaded once even when several members are missing, and
+    not at all when every one of them is already present.
+    """
+    wanted = [
+        (member, MODELS / local)
+        for member, local in BUFFALO_MEMBERS
+        if force or not (MODELS / local).exists()
+    ]
+    for _member, local in BUFFALO_MEMBERS:
+        target = MODELS / local
+        if target.exists() and not force:
+            print(f"  keeping existing {target.name} "
+                  f"({target.stat().st_size / 1e6:.1f} MB)")
+    if not wanted:
         return False
-    print(f"  downloading {ARCFACE_MEMBER} (from the buffalo_l bundle)")
+
+    names = ", ".join(target.name for _, target in wanted)
+    print(f"  downloading the buffalo_l bundle for: {names}")
     with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as handle:
         archive = Path(handle.name)
     try:
         urllib.request.urlretrieve(BUFFALO_L_URL, archive, _progress)  # noqa: S310
         sys.stdout.write("\r")
         with zipfile.ZipFile(archive) as bundle:
-            member = next(
-                (n for n in bundle.namelist() if n.endswith(ARCFACE_MEMBER)), None
-            )
-            if member is None:
-                raise RuntimeError(
-                    f"{ARCFACE_MEMBER} is not present in the downloaded bundle"
-                )
             MODELS.mkdir(parents=True, exist_ok=True)
-            with bundle.open(member) as src, target.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+            for member_name, target in wanted:
+                member = next(
+                    (n for n in bundle.namelist() if n.endswith(member_name)), None
+                )
+                if member is None:
+                    raise RuntimeError(
+                        f"{member_name} is not present in the downloaded bundle"
+                    )
+                with bundle.open(member) as src, target.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                print(f"  wrote {target} ({target.stat().st_size / 1e6:.1f} MB)")
     except zipfile.BadZipFile as exc:
         raise RuntimeError(
             f"the downloaded bundle is corrupt ({exc}); re-run this script"
         ) from exc
     finally:
         archive.unlink(missing_ok=True)
-    print(f"  wrote {target} ({target.stat().st_size / 1e6:.1f} MB)")
     return True
 
 
@@ -143,9 +169,9 @@ def main() -> int:
         download(SFACE[1], MODELS / SFACE[0], force=args.force)
 
     if args.tier in ("default", "all"):
-        print("\nArcFace recogniser (default tier):")
+        print("\nSCRFD detector + ArcFace recogniser (default tier):")
         try:
-            fetch_arcface(force=args.force)
+            fetch_buffalo_models(force=args.force)
         except (RuntimeError, OSError) as exc:
             print(f"  error: {exc}", file=sys.stderr)
             print(
@@ -162,7 +188,7 @@ def main() -> int:
 
     print("\nDone. Next:")
     print("  python main.py config validate --config config.yaml")
-    print("  python main.py gallery build   --config config.yaml")
+    print("  python main.py identity build  --config config.yaml")
     return 0
 
 

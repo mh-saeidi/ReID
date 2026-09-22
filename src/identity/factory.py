@@ -108,8 +108,10 @@ def build_face_detector(config: AppConfig, paths: ProjectPaths,
     if not model.exists():
         raise ModelLoadError(
             f"SCRFD face detector not found: {model}. Fetch it with: "
-            "python scripts/fetch_face_models.py --tier accurate, or set "
-            "face_identity.face_detector_backend: yunet to use the smaller one."
+            "python scripts/fetch_face_models.py -- or set "
+            "face_identity.face_detector_backend: yunet to use the smaller, "
+            "already-present detector, accepting the loss of score separation "
+            "documented in docs/identity.md section 3."
         )
     size = settings.face_detector_input
     return SCRFDFaceDetector(
@@ -118,12 +120,24 @@ def build_face_detector(config: AppConfig, paths: ProjectPaths,
         nms_threshold=settings.face_detector_nms,
         input_size=(size, size),
         device=device,
+        trt_cache_dir=paths.resolve(config.backend.tensorrt.engine_dir) / "scrfd",
+        trt_fp16=config.backend.tensorrt.precision.value != "fp32",
     )
 
 
 def build_face_encoder(config: AppConfig, paths: ProjectPaths,
                        device: DeviceInfo) -> ReIDEncoder:
-    """Construct the face embedding model."""
+    """Construct the face embedding model.
+
+    TensorRT is tried first where the platform provides it. It is a pure
+    acceleration swap -- same preprocessing, same embedding space, so the
+    calibrated thresholds still apply -- and falling back to ONNX Runtime
+    keeps a slower correct system rather than a stopped one.
+    """
+    from src.backends.selection import ModelRole
+    from src.backends.selection import select_backend as select_inference_backend
+    from src.backends.trt_encoder import try_build_tensorrt_encoder
+    from src.config.schema import InferenceBackend
     from src.face.embedder import ArcFaceOnnxEmbedder, SFaceEmbedder
 
     model = paths.resolve(config.face_identity.face_encoder_model)
@@ -132,6 +146,20 @@ def build_face_encoder(config: AppConfig, paths: ProjectPaths,
             f"face encoder not found: {model}. "
             "Run: python scripts/fetch_face_models.py"
         )
+
+    decision = select_inference_backend(ModelRole.FACE_ENCODER, model, config)
+    if decision.backend is InferenceBackend.TENSORRT:
+        accelerated = try_build_tensorrt_encoder(
+            model,
+            config,
+            paths,
+            role="face_encoder",
+            chip_size=config.face_identity.chip_size,
+            input_mean=config.face.arcface_input_mean,
+            input_scale=config.face.arcface_input_scale,
+        )
+        if accelerated is not None:
+            return accelerated
     if "sface" in model.name.lower():
         return SFaceEmbedder(model, device, batch_size=config.recognition.batch.max_size)
     return ArcFaceOnnxEmbedder(

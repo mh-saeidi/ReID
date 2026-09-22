@@ -99,13 +99,46 @@ def validate(
         f"  person detector : {app_config.models.detector}",
     ]
     if face_mode:
-        lines += [
-            f"  face detector   : {app_config.face.detector_model}",
-            f"  face encoder    : {app_config.face.recognition_model}",
+        # Which identity path will actually run, and the models it will use.
+        # Reporting only the legacy ones is misleading on a deployment that
+        # has enrolled a face gallery, which is exactly when somebody reads
+        # this output to check their configuration.
+        identity = app_config.face_identity
+        gallery = paths.resolve(identity.gallery_dir)
+        enrolled = (
+            sum(1 for entry in gallery.iterdir()
+                if entry.is_dir() and (entry / "metadata.json").exists())
+            if gallery.is_dir() else 0
+        )
+        active = identity.enabled and enrolled > 0
+        lines.append(
+            "  identity path   : "
+            + ("face_identity (passport-photo engine)" if active
+               else "person gallery -- the face gallery is empty; "
+                    "run 'identity build'")
+        )
+        if active:
+            calibration = paths.resolve(identity.calibration_file)
+            lines += [
+                f"  face detector   : {identity.face_detector_model} "
+                f"(conf {identity.face_detector_confidence})",
+                f"  face encoder    : {identity.face_encoder_model}",
+                f"  face gallery    : {gallery} ({enrolled} enrolled)",
+                "  calibration     : "
+                + (str(calibration) if calibration.exists()
+                   else f"ABSENT -- using fallback_threshold "
+                        f"{identity.fallback_threshold}; run 'calibrate'"),
+            ]
+        else:
+            lines += [
+                f"  face detector   : {app_config.face.detector_model}",
+                f"  face encoder    : {app_config.face.recognition_model}",
+            ]
+        lines.append(
             f"  min face size   : {app_config.face.min_face_size}px "
             f"(identity held {app_config.face.identity_hold_frames} frames "
-            "while the face is hidden)",
-        ]
+            "while the face is hidden)"
+        )
     else:
         lines.append(f"  reid model      : {app_config.models.reid}")
     lines += [

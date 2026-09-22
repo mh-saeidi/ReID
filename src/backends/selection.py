@@ -149,6 +149,12 @@ def select_backend(
 # Roles this implementation does not execute through TensorRT. YuNet is run by
 # OpenCV's own DNN module, which owns its pre/postprocessing; there is no
 # TensorRT path for it here, so reporting one would be misleading.
+#
+# SCRFD is an ONNX model and does benefit from TensorRT, but not through this
+# route: the shared TensorRTSession returns a single output tensor, and SCRFD
+# emits nine (three strides x score/bbox/landmark). It is accelerated instead
+# by ONNX Runtime's TensorRT execution provider, which handles multi-output
+# graphs and caches its own engines -- see src/face/scrfd.py.
 _NO_TENSORRT_ROLES = frozenset({ModelRole.FACE_DETECTOR})
 
 
